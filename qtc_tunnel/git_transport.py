@@ -428,39 +428,31 @@ class ClipboardGitServer:
             if len(packed_resp) <= self.chunk_bytes:
                 # Single-frame response: meta + body + SHA-256 in one frame
                 # replaces resp_meta + resp_data + resp_end (3+ round-trips → 1).
-                single = make_frame("resp_single", session, packed_resp)
-                try:
-                    self.endpoint.send_and_wait_ack(single, self.ack_timeout, self.retries)
-                except TimeoutError:
-                    # The client verifies the body SHA-256 inside the frame, so
-                    # a lost final ACK is harmless — the client has moved on.
-                    log_event(self.logger, logging.WARNING,
-                              "clipboard.resp_single_ack_timeout",
-                              session=session[:8], retries=self.retries)
-                    pass
+                # Fire-and-forget: the client self-verifies the body SHA-256, so
+                # NO ACK wait here. Waiting would trap serve_one in a
+                # retries×ack_timeout busy window (5×5s=25s) when the ACK is
+                # lost, during which A's next req_single goes unanswered → 504.
+                # The response frame is the LAST B-side write of this request;
+                # the next B-side write only happens after A's next
+                # request + resp_begin, which is safely past the propagation
+                # window, so no ACK pacing is required.
+                self.endpoint.write_frame(
+                    make_frame("resp_single", session, packed_resp))
             else:
                 # Multi-frame response (large body): existing protocol.
                 meta = json_payload({"status": response.status, "headers": response.headers})
                 for frame in frame_chunks("resp_meta", session, meta, self.chunk_bytes):
+                    # Meta ACK doubles as pacing: B must not write RESP_DATA
+                    # until A confirms RESP_META arrived (single-slot clipboard).
                     self.endpoint.send_and_wait_ack(frame, self.ack_timeout, self.retries)
                 for frame in frame_chunks("resp_data", session, response.body, self.chunk_bytes):
                     self.endpoint.send_and_wait_ack(frame, self.ack_timeout, self.retries)
                 end = Frame("resp_end", session, 0, 1, b"", None,
                             {"sha256": digest(response.body)})
-                try:
-                    self.endpoint.send_and_wait_ack(end, self.ack_timeout, self.retries)
-                except TimeoutError:
-                    # The client waits for RESP_END itself and verifies the body
-                    # SHA-256, so an ACK that never reaches us is harmless — the
-                    # client has moved on. Do NOT let a lost final ACK strand this
-                    # request: serve_one would then ignore the next request's
-                    # REQ_META (different session) for a full ACK window and the
-                    # pipelined client retry would 504. Fall through and pick up
-                    # the next request.
-                    log_event(self.logger, logging.WARNING,
-                              "clipboard.resp_end_ack_timeout",
-                              session=session[:8], retries=self.retries)
-                    pass
+                # Fire-and-forget final frame (same rationale as resp_single):
+                # a lost ACK must NOT strand serve_one for a full ACK window,
+                # or the pipelined client retries would 504.
+                self.endpoint.write_frame(end)
 
             log_event(self.logger, logging.INFO, "http.request.complete",
                       session=session[:8], status=response.status,
