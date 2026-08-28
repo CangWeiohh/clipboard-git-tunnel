@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from qtc_tunnel.clipboard import ClipboardEndpoint, WindowsClipboard
+from qtc_tunnel.focus import WindowsHSRFocus
 from qtc_tunnel.git_transport import ClipboardGitClient
 
 
@@ -78,9 +79,13 @@ def main():
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--max-request-bytes", type=int, default=64 * 1024 * 1024)
+    parser.add_argument("--window-keywords", default="",
+                        help="comma-separated HSRClient window title keywords")
     args = parser.parse_args()
     host, port = args.listen.rsplit(":", 1)
-    endpoint = ClipboardEndpoint(WindowsClipboard())
+    keywords = [item.strip() for item in args.window_keywords.split(",") if item.strip()]
+    focus = WindowsHSRFocus(keywords=keywords or None)
+    endpoint = ClipboardEndpoint(WindowsClipboard(), focus=focus)
     client = ClipboardGitClient(endpoint, chunk_bytes=args.chunk_bytes,
                                  ack_timeout=args.ack_timeout, retries=args.retries)
     server = AProxy((host, int(port)), client, args.timeout, args.max_request_bytes)

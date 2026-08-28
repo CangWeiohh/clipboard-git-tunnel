@@ -137,13 +137,17 @@ class MemoryClipboard(ClipboardBackend):
 class ClipboardEndpoint:
     """Polling endpoint that filters malformed, stale, or unrelated frames."""
 
-    def __init__(self, backend: ClipboardBackend, poll_interval: float = 0.05) -> None:
+    def __init__(self, backend: ClipboardBackend, poll_interval: float = 0.05,
+                 focus: object | None = None) -> None:
         self.backend = backend
         self.poll_interval = poll_interval
+        self.focus = focus
         self._last_text = None
 
     def write_frame(self, frame: Frame) -> None:
         text = frame.to_text()
+        if self.focus is not None:
+            self.focus.before_clipboard_write()
         self.backend.write(text)
         self._last_text = text
 

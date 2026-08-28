@@ -89,7 +89,8 @@ python b_end/b_tunnel.py --target 192.168.21.14:8888
 http://<user>:<password>@127.0.0.1:9998/<group>/<repo>.git
 ```
 
-默认每块 256 KiB；可用 `--chunk-bytes` 调整。第一轮实测建议从 `65536`（64 KiB）开始，不要直接假定 HSR 能稳定承载 MB 级剪贴板内容。
+A 端会在每个协议帧写入剪贴板前自动发现并激活 HSRClient 窗口；这是 HSR 剪贴板同步生效的必要条件。若自动识别失败，可用 `--window-keywords "窗口标题片段"` 指定标题关键字。
+
 
 ## 真实环境验收顺序
 
