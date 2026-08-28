@@ -76,7 +76,7 @@ python -m unittest discover -s tests -v
 仓库根目录提供启动脚本（放在项目根目录，`%~dp0` 自动定位，仓库拷到任何位置都能用）：
 
 ```text
-start_a.bat   # A 端：监听 127.0.0.1:9998（Windows VM，嵌入版 C:\Python311）
+start_a.bat   # A 端：监听 0.0.0.0:9999（Windows VM，嵌入版 C:\Python311，供 Mac 访问）
 start_b.bat   # B 端：转发 192.168.21.14:8888（云桌面，安装版 python）
 ```
 
@@ -87,7 +87,7 @@ start_b.bat   # B 端：转发 192.168.21.14:8888（云桌面，安装版 python
 A 端（能访问 HSRClient 窗口的机器）：
 
 ```powershell
-python a_end/a_proxy.py --listen 127.0.0.1:9998
+python a_end/a_proxy.py --listen 127.0.0.1:9999
 ```
 
 B 端（云桌面）：
@@ -99,7 +99,7 @@ python b_end/b_tunnel.py --target 192.168.21.14:8888
 然后将 Git remote 临时指向：
 
 ```text
-http://<user>:<password>@127.0.0.1:9998/<group>/<repo>.git
+http://<user>:<password>@127.0.0.1:9999/<group>/<repo>.git
 ```
 
 A 端会在每个协议帧写入剪贴板前自动发现并激活 HSRClient 窗口；这是 HSR 剪贴板同步生效的必要条件。若自动识别失败，可用 `--window-keywords "窗口标题片段"` 指定标题关键字。

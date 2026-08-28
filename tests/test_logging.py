@@ -24,7 +24,7 @@ class LoggingFormatTests(unittest.TestCase):
 
     def test_safe_http_path_strips_userinfo(self):
         self.assertEqual(
-            safe_http_path("http://user:pass@127.0.0.1:9998/fsdp/a.git/info/refs?service=git-upload-pack"),
+            safe_http_path("http://user:pass@127.0.0.1:9999/fsdp/a.git/info/refs?service=git-upload-pack"),
             "/fsdp/a.git/info/refs?service=git-upload-pack",
         )
         self.assertEqual(safe_http_path("/plain/path"), "/plain/path")
