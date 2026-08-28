@@ -112,6 +112,21 @@ A 端会在每个协议帧写入剪贴板前自动发现并激活 HSRClient 窗�
 - B 端写剪贴板只应发生在明确的 QTC 会话中；检测到用户非 QTC 内容时应中止当前实验传输。
 - 当前代码为研究基线，尚未实现用户原剪贴板恢复、断点续传、QR fallback 和自动能力探针。
 
+## 日志规范
+
+A 端和 B 端统一使用结构化日志，控制台与滚动文件同格式。时间戳固定为**北京时间（UTC+8）** `yyyy-MM-dd HH:mm:ss`：
+
+```text
+2026-08-28 15:28:03 | INFO | A | http.request.begin | method="GET" path="/fsdp/a.git/info/refs?service=git-upload-pack" request_bytes=0 session="abcd1234"
+```
+
+- 日志文件：项目目录 `logs/a-tunnel.log`、`logs/b-tunnel.log`（滚动文件，默认 5 MiB × 5 份）
+- 端标识：`A` / `B`（benchmark 用 `BENCH`）
+- 级别：`--log-level DEBUG|INFO|WARNING|ERROR`（默认 `INFO`），`--log-dir` 可改目录
+- 事件命名：`process.start`、`listener.ready`、`http.request.begin/received/complete`、`http.response.sent`、`http.request.timeout/failed`、`clipboard.busy`、`clipboard.ack_timeout`、`focus.foreground_failed` 等
+- `DEBUG` 级别会记录逐帧发送/接收元数据（`frame.send` / `frame.receive`：kind/seq/total/payload 字节数），不记录正文
+- **安全边界**：绝不记录剪贴板正文、HTTP 请求/响应正文、`Authorization`、Cookie 或 URL userinfo；日志路径由 `safe_http_path` 清洗
+
 ## 与原 qrtunnel 的关系
 
 原项目位于 `../python/qrtunnel`，继续作为稳定 QR 隧道使用。本仓库独立演进，避免影响现有部署；成熟后再择机抽取公共 HTTP/日志/探针代码。

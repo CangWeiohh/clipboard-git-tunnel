@@ -9,11 +9,14 @@ with MemoryClipboard on non-Windows systems.
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import re
 import threading
 import time
 from ctypes import wintypes
+
+from .logging_utils import log_event
 
 
 class FocusController:
@@ -32,11 +35,13 @@ class WindowsHSRFocus(FocusController):
         "applicationframehost.exe", "sihost.exe", "dwm.exe",
     }
 
-    def __init__(self, keywords: list[str] | None = None, rescan_interval: float = 3.0):
+    def __init__(self, keywords: list[str] | None = None, rescan_interval: float = 3.0,
+                 logger: logging.Logger | None = None):
         if os.name != "nt":
             raise RuntimeError("WindowsHSRFocus requires Windows")
         self.keywords = [item.lower() for item in (keywords or []) if item.strip()]
         self.rescan_interval = rescan_interval
+        self.logger = logger or logging.getLogger("clipboard_git_tunnel.focus")
         self.user32 = ctypes.windll.user32
         self.kernel32 = ctypes.windll.kernel32
         self._lock = threading.RLock()
@@ -164,6 +169,5 @@ class WindowsHSRFocus(FocusController):
                         tgt_title = ctypes.create_unicode_buffer(256)
                         self.user32.GetWindowTextW(fg, fg_title, 256)
                         self.user32.GetWindowTextW(target, tgt_title, 256)
-                        print(f"[focus] WARNING: could not foreground HSRClient "
-                              f"(fg={fg_title.value!r}, target={tgt_title.value!r})",
-                              flush=True)
+                        log_event(self.logger, logging.WARNING, "focus.foreground_failed",
+                                  foreground=fg_title.value, target=tgt_title.value)

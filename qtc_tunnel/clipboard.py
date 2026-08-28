@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import threading
 import time
@@ -10,6 +11,7 @@ from dataclasses import replace
 from ctypes import wintypes
 from typing import Callable
 
+from .logging_utils import log_event
 from .protocol import Frame, ProtocolError, parse_json_payload
 
 
@@ -30,11 +32,13 @@ class WindowsClipboard(ClipboardBackend):
 
     CF_UNICODETEXT = 13
 
-    def __init__(self, retries: int = 750, delay: float = 0.02) -> None:
+    def __init__(self, retries: int = 750, delay: float = 0.02,
+                 logger: logging.Logger | None = None) -> None:
         if os.name != "nt":
             raise ClipboardError("WindowsClipboard requires Windows")
         self.retries = retries
         self.delay = delay
+        self.logger = logger or logging.getLogger("clipboard_git_tunnel.clipboard")
         # HSR holds the clipboard open while syncing large frames (256 KiB
         # payloads take seconds to move), so local OpenClipboard calls must be
         # willing to wait well beyond the old 200 ms budget or every request
@@ -65,8 +69,9 @@ class WindowsClipboard(ClipboardBackend):
                 return
             if not warned and attempt * self.delay >= 2.0:
                 warned = True
-                print(f"[clipboard] warning: clipboard busy {(attempt * self.delay):.1f}s "
-                      "(HSR syncing?)", flush=True)
+                log_event(self.logger, logging.WARNING, "clipboard.busy",
+                          elapsed_ms=int(attempt * self.delay * 1000),
+                          hint="HSR syncing")
             time.sleep(self.delay)
         raise ClipboardError(
             f"OpenClipboard failed (busy > {self.retries * self.delay:.0f}s)")
@@ -148,11 +153,13 @@ class ClipboardEndpoint:
     """Polling endpoint that filters malformed, stale, or unrelated frames."""
 
     def __init__(self, backend: ClipboardBackend, poll_interval: float = 0.05,
-                 focus: object | None = None, min_write_gap: float = 0.0) -> None:
+                 focus: object | None = None, min_write_gap: float = 0.0,
+                 logger: logging.Logger | None = None) -> None:
         self.backend = backend
         self.poll_interval = poll_interval
         self.focus = focus
         self.min_write_gap = float(min_write_gap)
+        self.logger = logger or logging.getLogger("clipboard_git_tunnel.clipboard")
         self._last_text = None
         self._last_write_time = 0.0
 
@@ -178,7 +185,8 @@ class ClipboardEndpoint:
         """
         wait = self.min_write_gap - (time.monotonic() - self._last_write_time)
         if wait > 0:
-            print(f"[qtc] write gap: sleeping {wait:.2f}s", flush=True)
+            log_event(self.logger, logging.DEBUG, "clipboard.write_gap",
+                      wait_ms=int(wait * 1000))
             time.sleep(wait)
 
     def wait_frame(self, predicate: Callable[[Frame], bool], timeout: float) -> Frame:
@@ -192,6 +200,10 @@ class ClipboardEndpoint:
                 except ProtocolError:
                     frame = None
                 if frame is not None and predicate(frame):
+                    log_event(self.logger, logging.DEBUG, "frame.receive",
+                              session=frame.session[:8], kind=frame.kind,
+                              seq=frame.seq, total=frame.total,
+                              payload_bytes=len(frame.payload), retry=frame.retry)
                     return frame
             time.sleep(self.poll_interval)
         raise TimeoutError("clipboard frame timeout")
@@ -199,6 +211,10 @@ class ClipboardEndpoint:
     def send_and_wait_ack(self, frame: Frame, timeout: float, retries: int = 5) -> None:
         for attempt in range(1, retries + 1):
             outbound = replace(frame, retry=attempt - 1)
+            log_event(self.logger, logging.DEBUG, "frame.send",
+                      session=frame.session[:8], kind=frame.kind,
+                      seq=frame.seq, total=frame.total,
+                      payload_bytes=len(outbound.payload), retry=attempt - 1)
             self.write_frame(outbound)
             try:
                 reply = self.wait_frame(
@@ -217,6 +233,8 @@ class ClipboardEndpoint:
                 return
             except TimeoutError as exc:
                 if attempt == retries:
+                    log_event(self.logger, logging.WARNING, "clipboard.ack_timeout",
+                              kind=frame.kind, seq=frame.seq, attempts=retries)
                     raise TimeoutError(
                         f"clipboard ACK timeout kind={frame.kind} seq={frame.seq} "
                         f"attempts={retries}") from exc

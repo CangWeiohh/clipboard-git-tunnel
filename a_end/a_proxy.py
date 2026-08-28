@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from qtc_tunnel.clipboard import ClipboardEndpoint, WindowsClipboard
 from qtc_tunnel.focus import WindowsHSRFocus
 from qtc_tunnel.git_transport import ClipboardGitClient
+from qtc_tunnel.logging_utils import log_event, log_exception, safe_http_path, setup_logging
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -29,8 +32,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _handle(self, head_only: bool = False):
         tunnel: "AProxy" = self.server  # type: ignore[assignment]
+        started = time.monotonic()
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length > tunnel.max_request_bytes:
+            log_event(tunnel.logger, logging.WARNING, "http.request.rejected",
+                      method=self.command, path=safe_http_path(self.path),
+                      request_bytes=length, reason="request_too_large")
             self.send_error(413, "request body too large")
             return
         body = self.rfile.read(length) if length else b""
@@ -38,19 +45,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
         session = uuid.uuid4().hex
         try:
             with tunnel.lock:
-                # Guard the cross-request boundary: git fires the next request
-                # within milliseconds of the previous one completing (e.g.
-                # clone's GET -> POST). HSR drops back-to-back same-side
-                # clipboard writes inside one propagation window, so the first
-                # write of a new exchange must be spaced from the previous
-                # request's final ACK.
                 tunnel.client.endpoint.wait_write_gap()
                 response = tunnel.client.request(
                     session, self.command, self.path, headers, body, tunnel.timeout)
         except TimeoutError as exc:
+            log_exception(tunnel.logger, "http.request.timeout", exc,
+                          session=session[:8], method=self.command,
+                          path=safe_http_path(self.path), request_bytes=len(body),
+                          elapsed_ms=int((time.monotonic() - started) * 1000))
             self.send_error(504, str(exc))
             return
         except Exception as exc:
+            log_exception(tunnel.logger, "http.request.failed", exc,
+                          session=session[:8], method=self.command,
+                          path=safe_http_path(self.path), request_bytes=len(body),
+                          elapsed_ms=int((time.monotonic() - started) * 1000))
             self.send_error(502, f"clipboard tunnel error: {exc}")
             return
         self.send_response(response.status)
@@ -62,19 +71,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if not head_only:
             self.wfile.write(response.body)
+        log_event(tunnel.logger, logging.INFO, "http.response.sent",
+                  session=session[:8], method=self.command,
+                  path=safe_http_path(self.path), status=response.status,
+                  request_bytes=len(body), response_bytes=len(response.body),
+                  elapsed_ms=int((time.monotonic() - started) * 1000))
 
     def log_message(self, fmt, *args):
-        print("[A] " + (fmt % args), flush=True)
+        # HTTP access logging is emitted by _handle after the tunnel response
+        # is known, so it has structured status/size/timing fields.
+        return
 
 
 class AProxy(ThreadingHTTPServer):
     allow_reuse_address = True
 
-    def __init__(self, address, client, timeout, max_request_bytes):
+    def __init__(self, address, client, timeout, max_request_bytes, logger):
         super().__init__(address, ProxyHandler)
         self.client = client
         self.timeout = timeout
         self.max_request_bytes = max_request_bytes
+        self.logger = logger
         self.lock = threading.Lock()
 
 
@@ -91,16 +108,31 @@ def main():
     parser.add_argument("--max-request-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--window-keywords", default="",
                         help="comma-separated HSRClient window title keywords")
+    parser.add_argument("--log-level", default="INFO",
+                        choices=("DEBUG", "INFO", "WARNING", "ERROR"))
+    parser.add_argument("--log-dir", default="",
+                        help="log directory (default: <project>\\logs)")
     args = parser.parse_args()
+    project_root = Path(__file__).resolve().parent.parent
+    logger, log_path = setup_logging(
+        side="A", project_root=project_root, log_level=args.log_level,
+        log_dir=Path(args.log_dir) if args.log_dir else None)
+    log_event(logger, logging.INFO, "process.start", version="0.1",
+              listen=args.listen, chunk_bytes=args.chunk_bytes,
+              ack_timeout_s=args.ack_timeout, retries=args.retries,
+              timeout_s=args.timeout, write_gap_s=args.write_gap,
+              log_path=str(log_path))
     host, port = args.listen.rsplit(":", 1)
     keywords = [item.strip() for item in args.window_keywords.split(",") if item.strip()]
-    focus = WindowsHSRFocus(keywords=keywords or None)
-    endpoint = ClipboardEndpoint(WindowsClipboard(), focus=focus,
-                                 min_write_gap=args.write_gap)
+    focus = WindowsHSRFocus(keywords=keywords or None, logger=logger)
+    endpoint = ClipboardEndpoint(WindowsClipboard(logger=logger), focus=focus,
+                                 min_write_gap=args.write_gap, logger=logger)
     client = ClipboardGitClient(endpoint, chunk_bytes=args.chunk_bytes,
-                                 ack_timeout=args.ack_timeout, retries=args.retries)
-    server = AProxy((host, int(port)), client, args.timeout, args.max_request_bytes)
-    print(f"[A] Clipboard Git Tunnel listening on {args.listen}", flush=True)
+                                ack_timeout=args.ack_timeout, retries=args.retries,
+                                logger=logger)
+    server = AProxy((host, int(port)), client, args.timeout, args.max_request_bytes, logger)
+    log_event(logger, logging.INFO, "listener.ready", address=args.listen,
+              log_path=str(log_path))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
