@@ -234,7 +234,10 @@ class ClipboardEndpoint:
             except TimeoutError as exc:
                 if attempt == retries:
                     log_event(self.logger, logging.WARNING, "clipboard.ack_timeout",
-                              kind=frame.kind, seq=frame.seq, attempts=retries)
+                              kind=frame.kind, seq=frame.seq, attempts=retries,
+                              hint="peer never observed this frame; check HSRClient "
+                                   "window has foreground (HSR skips clipboard sync "
+                                   "while its render window is not active)")
                     raise TimeoutError(
                         f"clipboard ACK timeout kind={frame.kind} seq={frame.seq} "
                         f"attempts={retries}") from exc
