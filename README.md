@@ -1,8 +1,8 @@
 # Clipboard Git Tunnel
 
-基于 `qrtunnel` 的实验性独立仓库：使用 HSRClient 已打通的**双向剪贴板**，把 Git Smart HTTP 请求和响应都做成可靠分块传输。
+基于 [`qr-git-tunnel`](https://github.com/CangWeiohh/qr-git-tunnel) 的实验性独立仓库：使用 HSRClient 已打通的**双向剪贴板**，把 Git Smart HTTP 请求和响应都做成可靠分块传输。
 
-> 当前版本是协议和本地模拟闭环的第一版，不替换现有 `qrtunnel`，也不建议直接用于生产 Git。真实部署前必须在目标 Windows/HSR 环境完成剪贴板容量、延迟、丢帧和大请求测试。
+> 当前版本是协议和本地模拟闭环的第一版，不替换现有 [`qr-git-tunnel`](https://github.com/CangWeiohh/qr-git-tunnel)，也不建议直接用于生产 Git。真实部署前必须在目标 Windows/HSR 环境完成剪贴板容量、延迟、丢帧和大请求测试。
 
 ## 给 AI 协作工具：请先读 AGENTS.md
 
@@ -25,7 +25,7 @@
 - 每个分块 stop-and-wait，必须收到 ACK 才发送下一块。
 - 每块带 SHA-256，整段响应再次校验 SHA-256。
 - 不把 Git 协议改成自定义命令，保持 Smart HTTP 兼容。
-- 后续可将现有 qrtunnel QR 作为 `auto` 模式的 fallback。
+- 后续可将现有 `qr-git-tunnel` QR 通道作为 `auto` 模式的 fallback。
 
 ## 数据流
 
@@ -163,6 +163,6 @@ A 端和 B 端统一使用结构化日志，控制台与滚动文件同格式。
 - `DEBUG` 级别会记录逐帧发送/接收元数据（`frame.send` / `frame.receive`：kind/seq/total/payload 字节数），不记录正文
 - **安全边界**：绝不记录剪贴板正文、HTTP 请求/响应正文、`Authorization`、Cookie 或 URL userinfo；日志路径由 `safe_http_path` 清洗
 
-## 与原 qrtunnel 的关系
+## 与 qr-git-tunnel 的关系
 
-原项目位于 `../python/qrtunnel`，继续作为稳定 QR 隧道使用。本仓库独立演进，避免影响现有部署；成熟后再择机抽取公共 HTTP/日志/探针代码。
+[`qr-git-tunnel`](https://github.com/CangWeiohh/qr-git-tunnel) 继续作为稳定的二维码 Git 隧道独立演进；本仓库使用双向剪贴板作为传输通道，不依赖或导入 qr-git-tunnel 的代码。两者是面向同一类内网 Git 同步场景的姊妹项目，成熟后可择机抽取公共 HTTP、日志与探针代码。

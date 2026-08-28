@@ -1,7 +1,7 @@
 """Windows HSRClient foreground controller.
 
-HSR clipboard redirection in the qrtunnel deployment only propagates updates
-reliably while the HSRClient render window owns the foreground. This module is
+HSR clipboard redirection in the qr-git-tunnel deployment only propagates
+updates reliably while the HSRClient render window owns the foreground. This module is
 kept separate from the transport protocol so the transport remains testable
 with MemoryClipboard on non-Windows systems.
 """
