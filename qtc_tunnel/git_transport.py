@@ -61,14 +61,35 @@ class ClipboardGitClient:
         self._send_frames("req_data", session, body)
         end = Frame("req_end", session, 0, 1, b"", None)
         self.endpoint.send_and_wait_ack(end, self.ack_timeout, self.retries)
-        # Barrier for the final request ACK. HSR clipboard propagation can be
-        # slower than the local B-end code path; without this confirmation B
-        # could overwrite req_end's ACK with the response before A observes it.
+        # Barrier for the final request ACK. HSR clipboard propagation is
+        # slower than the local B-end code path; without the commit + begin
+        # handshake below, B's req_commit ACK could be overwritten by the
+        # response before A observes it (single-slot clipboard + event-driven
+        # sync: consecutive same-side writes within the propagation window
+        # drop the earlier one).
         commit = Frame("req_commit", session, 0, 1, b"", None)
         self.endpoint.send_and_wait_ack(commit, self.ack_timeout, self.retries)
 
-        response_meta = parse_json_payload(
-            reassemble(self._receive_set("resp_meta", session, timeout)))
+        # Announce readiness to receive the response. B must observe this
+        # frame before writing RESP_META. It is deliberately NOT acknowledged:
+        # an ACK here would be a second B-side write racing RESP_META. If the
+        # response does not start arriving, resend the marker and keep waiting.
+        begin_deadline = time.monotonic() + timeout
+        begin_attempt = 0
+        while True:
+            begin_attempt += 1
+            self.endpoint.write_frame(
+                Frame("resp_begin", session, 0, 1, b"", None, retry=begin_attempt - 1))
+            try:
+                response_meta = parse_json_payload(
+                    reassemble(self._receive_set("resp_meta", session, self.ack_timeout)))
+                break
+            except TimeoutError:
+                if time.monotonic() >= begin_deadline:
+                    raise TimeoutError(
+                        f"clipboard resp_begin timeout session={session[:8]} "
+                        f"attempts={begin_attempt}") from None
+                # keep waiting; resend the begin marker
         response_frames = self._receive_set("resp_data", session, timeout)
         end = self.endpoint.wait_frame(
             lambda item: item.session == session and item.kind in {"resp_end", "error"},
@@ -151,6 +172,14 @@ class ClipboardGitServer:
             timeout,
         )
         self.endpoint.acknowledge(commit)
+        # Wait for A to confirm it received req_commit's ACK before sending
+        # anything. Deliberately no ACK for resp_begin: writing twice in a row
+        # from B side (req_commit ACK, then response) within HSR's propagation
+        # window silently drops the earlier write on the shared clipboard.
+        self.endpoint.wait_frame(
+            lambda item: item.session == session and item.kind == "resp_begin",
+            timeout,
+        )
         return method, path, headers, reassemble(data)
 
     def _forward(self, method: str, path: str, headers: list[tuple[str, str]], body: bytes) -> HttpMessage:
