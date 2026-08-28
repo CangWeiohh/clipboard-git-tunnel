@@ -1,0 +1,112 @@
+# Clipboard Git Tunnel
+
+基于 `qrtunnel` 的实验性独立仓库：使用 HSRClient 已打通的**双向剪贴板**，把 Git Smart HTTP 请求和响应都做成可靠分块传输。
+
+> 当前版本是协议和本地模拟闭环的第一版，不替换现有 `qrtunnel`，也不建议直接用于生产 Git。真实部署前必须在目标 Windows/HSR 环境完成剪贴板容量、延迟、丢帧和大请求测试。
+
+## 目标
+
+- A 端继续提供 Git/IDEA 可直接使用的 HTTP 代理。
+- B 端访问云桌面内网 Git 服务。
+- A→B 和 B→A 都通过 HSR 双向剪贴板传输。
+- 每个分块 stop-and-wait，必须收到 ACK 才发送下一块。
+- 每块带 SHA-256，整段响应再次校验 SHA-256。
+- 不把 Git 协议改成自定义命令，保持 Smart HTTP 兼容。
+- 后续可将现有 qrtunnel QR 作为 `auto` 模式的 fallback。
+
+## 数据流
+
+```text
+Git / IDEA
+   │ HTTP
+   ▼
+A proxy ── QTC1 clipboard frames ── B forwarder ── HTTP ──> internal Git
+   ▲                                      │
+   └────────────── QTC1 response frames ──┘
+```
+
+## 协议概览
+
+剪贴板是单槽位共享状态，因此协议不是连续写入，而是严格交替：
+
+```text
+A  REQ_META  → B
+A  ← ACK
+A  REQ_DATA  → B
+A  ← ACK
+...
+A  REQ_END   → B
+A  ← ACK
+
+B  RESP_META → A
+B  ← ACK
+B  RESP_DATA → A
+B  ← ACK
+...
+B  RESP_END  → A
+B  ← ACK
+```
+
+线格式为 `QTC1:<base64(JSON)>`。JSON 字段包括：
+
+- `v`: `qtc-clipboard-1`
+- `kind`: `req_meta`、`req_data`、`req_end`、`resp_meta`、`resp_data`、`resp_end`、`ack`、`error`
+- `session`: 每次 HTTP 请求唯一 ID
+- `seq` / `total`: 分块序号
+- `payload`: Base64 数据
+- `sha256`: 当前块校验值
+- `meta`: 结束帧可携带整段数据校验值
+
+## 本地运行模拟闭环
+
+无需 Windows 剪贴板或网络 Git：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+测试使用 `MemoryClipboard` 模拟 HSR 单槽位，并用本地 HTTP server 模拟内网 Git。
+
+## Windows 实验运行
+
+A 端（能访问 HSRClient 窗口的机器）：
+
+```powershell
+python a_end/a_proxy.py --listen 127.0.0.1:9998
+```
+
+B 端（云桌面）：
+
+```powershell
+python b_end/b_tunnel.py --target 192.168.21.14:8888
+```
+
+然后将 Git remote 临时指向：
+
+```text
+http://<user>:<password>@127.0.0.1:9998/<group>/<repo>.git
+```
+
+默认每块 256 KiB；可用 `--chunk-bytes` 调整。第一轮实测建议从 `65536`（64 KiB）开始，不要直接假定 HSR 能稳定承载 MB 级剪贴板内容。
+
+## 真实环境验收顺序
+
+1. 运行独立 clipboard benchmark，确认 B 写入能稳定回到 A。
+2. 测试 1 KiB、64 KiB、256 KiB、512 KiB、1 MiB 的成功率和 P95 延迟。
+3. 测试相同内容重复写入是否被 HSR 去重；每块必须带随机 session/seq。
+4. 先验证 `GET /info/refs?service=git-upload-pack`。
+5. 再验证浅 clone、小 fetch、大 fetch。
+6. 最后验证大 push 的 A→B 请求体分块。
+7. 发生超时、截断或用户剪贴板介入时，必须能明确失败，不覆盖未知剪贴板内容。
+8. 稳定后再把 QRTransport 接入 `--transport auto` 降级策略。
+
+## 安全边界
+
+- 不记录剪贴板正文、Git body、Authorization 或 Cookie。
+- `WindowsClipboard` 只使用 `CF_UNICODETEXT`，因此会有文本/编码/容量限制；它不是任意二进制剪贴板。
+- B 端写剪贴板只应发生在明确的 QTC 会话中；检测到用户非 QTC 内容时应中止当前实验传输。
+- 当前代码为研究基线，尚未实现用户原剪贴板恢复、断点续传、QR fallback 和自动能力探针。
+
+## 与原 qrtunnel 的关系
+
+原项目位于 `../python/qrtunnel`，继续作为稳定 QR 隧道使用。本仓库独立演进，避免影响现有部署；成熟后再择机抽取公共 HTTP/日志/探针代码。

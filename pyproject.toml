@@ -1,0 +1,8 @@
+[project]
+name = "clipboard-git-tunnel"
+version = "0.1.0.dev0"
+description = "Bidirectional HSR clipboard Git tunnel"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
