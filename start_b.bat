@@ -1,24 +1,27 @@
 @echo off
 rem Start the B-end Git forwarder (cloud desktop).
-rem Reads python path and B-side options from config.yaml; extra args pass through.
-setlocal
+rem Reads b_python and B-side options from config.yaml; extra args pass through.
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "PY_EXE=python"
-if exist "%~dp0config.yaml" (
-    for /f "usebackq delims=" %%L in (`findstr /b /c:"b_python:" "%~dp0config.yaml"`) do set "CFG_PY_LINE=%%L"
-    if defined CFG_PY_LINE (
-        set "CFG_PY=%CFG_PY_LINE:*b_python:=%"
-        if defined CFG_PY set "CFG_PY=%CFG_PY: =%"
-        if defined CFG_PY set "CFG_PY=%CFG_PY:"=%"
-        if defined CFG_PY set "PY_EXE=%CFG_PY%"
-    )
-)
+if not exist "%~dp0config.yaml" goto :launch
 
-echo [B] Using python: %PY_EXE%
+set "CFG_PY_LINE="
+for /f "usebackq delims=" %%L in (`findstr /b /c:"b_python:" "%~dp0config.yaml"`) do set "CFG_PY_LINE=%%L"
+if not defined CFG_PY_LINE goto :launch
+
+set "CFG_PY=!CFG_PY_LINE:*b_python:=!"
+for /f "tokens=*" %%V in ("!CFG_PY!") do set "CFG_PY=%%V"
+set "CFG_PY=!CFG_PY:"=!"
+if not defined CFG_PY goto :launch
+set "PY_EXE=!CFG_PY!"
+
+:launch
+echo [B] Using python: !PY_EXE!
 echo [B] Starting Clipboard Git Tunnel (B forwarder, config=%~dp0config.yaml)...
 echo [B] Extra args passed through: %*
-"%PY_EXE%" b_end\b_tunnel.py --config "%~dp0config.yaml" %*
+"!PY_EXE!" b_end\b_tunnel.py --config "%~dp0config.yaml" %*
 
 echo.
 echo [B] Tunnel exited with errorlevel %errorlevel%.

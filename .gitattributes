@@ -1,0 +1,3 @@
+# Batch files must stay CRLF on every platform: cmd mis-parses LF-only
+# multi-line blocks, and git archive otherwise normalizes them to LF.
+*.bat text eol=crlf
