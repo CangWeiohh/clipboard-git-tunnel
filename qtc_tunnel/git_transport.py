@@ -45,6 +45,13 @@ class ClipboardGitClient:
             if frame.kind == "error":
                 error = parse_json_payload(frame.payload)
                 raise RuntimeError(error.get("message", "remote tunnel error"))
+            if frame.seq == len(frames) - 1 and frames:
+                # ACK loss makes the peer retransmit the last frame;
+                # re-acknowledge but do not append a duplicate.
+                continue
+            if frame.seq != len(frames):
+                raise ProtocolError(
+                    f"clipboard frames out of order: expected seq={len(frames)}, got {frame.seq}")
             frames.append(frame)
             if frame.seq == frame.total - 1:
                 return frames
@@ -212,7 +219,17 @@ class ClipboardGitServer:
                 self.endpoint.send_and_wait_ack(frame, self.ack_timeout, self.retries)
             end = Frame("resp_end", session, 0, 1, b"", None,
                         {"sha256": digest(response.body)})
-            self.endpoint.send_and_wait_ack(end, self.ack_timeout, self.retries)
+            try:
+                self.endpoint.send_and_wait_ack(end, self.ack_timeout, self.retries)
+            except TimeoutError:
+                # The client waits for RESP_END itself and verifies the body
+                # SHA-256, so an ACK that never reaches us is harmless — the
+                # client has moved on. Do NOT let a lost final ACK strand this
+                # request: serve_one would then ignore the next request's
+                # REQ_META (different session) for a full ACK window and the
+                # pipelined client retry would 504. Fall through and pick up
+                # the next request.
+                pass
         except Exception as exc:
             error = Frame("error", session, 0, 1,
                           json_payload({"message": str(exc)[:500]}), None)

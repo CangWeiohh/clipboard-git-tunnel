@@ -159,5 +159,11 @@ class WindowsHSRFocus(FocusController):
                 if self.user32.GetForegroundWindow() != target:
                     if now - self._last_warning >= 5.0:
                         self._last_warning = now
-                        print("[focus] WARNING: could not foreground HSRClient "
-                              "(clipboard writes may not cross to B)", flush=True)
+                        fg = self.user32.GetForegroundWindow()
+                        fg_title = ctypes.create_unicode_buffer(256)
+                        tgt_title = ctypes.create_unicode_buffer(256)
+                        self.user32.GetWindowTextW(fg, fg_title, 256)
+                        self.user32.GetWindowTextW(target, tgt_title, 256)
+                        print(f"[focus] WARNING: could not foreground HSRClient "
+                              f"(fg={fg_title.value!r}, target={tgt_title.value!r})",
+                              flush=True)

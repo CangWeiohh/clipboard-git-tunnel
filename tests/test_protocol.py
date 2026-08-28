@@ -1,13 +1,60 @@
 from __future__ import annotations
 
 import threading
+import time
 import unittest
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from qtc_tunnel.clipboard import ClipboardEndpoint, MemoryClipboard
 from qtc_tunnel.git_transport import ClipboardGitClient, ClipboardGitServer
 from qtc_tunnel.protocol import Frame, ProtocolError, digest, make_frame
 from qtc_tunnel.transfer import frame_chunks, reassemble
+
+
+class ClientReceiveSetTests(unittest.TestCase):
+    def test_skips_retransmitted_frame(self):
+        clipboard = MemoryClipboard()
+        writer = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        client = ClipboardGitClient(
+            ClipboardEndpoint(clipboard, poll_interval=0.001),
+            chunk_bytes=3, ack_timeout=1, retries=3)
+        session = "dup-sess"
+        f0 = make_frame("resp_data", session, b"ab", seq=0, total=2)
+        f1 = make_frame("resp_data", session, b"cd", seq=1, total=2)
+
+        def feed():
+            time.sleep(0.05)
+            writer.write_frame(f0)
+            time.sleep(0.05)
+            writer.write_frame(replace(f0, retry=1))  # ACK-loss retransmission
+            time.sleep(0.05)
+            writer.write_frame(f1)
+
+        thread = threading.Thread(target=feed, daemon=True)
+        thread.start()
+        frames = client._receive_set("resp_data", session, 3)
+        thread.join(1)
+        self.assertEqual(reassemble(frames), b"abcd")
+
+    def test_out_of_order_rejected(self):
+        clipboard = MemoryClipboard()
+        writer = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        client = ClipboardGitClient(
+            ClipboardEndpoint(clipboard, poll_interval=0.001),
+            chunk_bytes=3, ack_timeout=1, retries=3)
+        session = "ooo-sess"
+        f1 = make_frame("resp_data", session, b"ab", seq=1, total=2)
+
+        def feed():
+            time.sleep(0.05)
+            writer.write_frame(f1)
+
+        thread = threading.Thread(target=feed, daemon=True)
+        thread.start()
+        with self.assertRaises(ProtocolError):
+            client._receive_set("resp_data", session, 3)
+        thread.join(1)
 
 
 class ProtocolTests(unittest.TestCase):
