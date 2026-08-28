@@ -73,6 +73,17 @@ python -m unittest discover -s tests -v
 
 ## Windows 实验运行
 
+仓库根目录提供启动脚本（放在项目根目录，`%~dp0` 自动定位，仓库拷到任何位置都能用）：
+
+```text
+start_a.bat   # A 端：监听 127.0.0.1:9998（Windows VM，嵌入版 C:\Python311）
+start_b.bat   # B 端：转发 192.168.21.14:8888（云桌面，安装版 python）
+```
+
+双击即可启动；也可以在后面追加参数，例如 `start_a.bat --log-level DEBUG`。
+
+等价的手动命令：
+
 A 端（能访问 HSRClient 窗口的机器）：
 
 ```powershell
