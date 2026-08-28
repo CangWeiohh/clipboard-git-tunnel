@@ -73,27 +73,39 @@ python -m unittest discover -s tests -v
 
 ## Windows 实验运行
 
-仓库根目录提供启动脚本（放在项目根目录，`%~dp0` 自动定位，仓库拷到任何位置都能用）：
+### 配置文件（config.yaml）
+
+仓库根目录的 `config.yaml` 集中管理所有可调参数，A/B 两端和启动脚本共用：
+
+- `python`: Python 解释器绝对路径；留空 `""` 则使用 PATH 中的 `python`
+- `a_*`: A 端参数（`a_listen`、`a_chunk_bytes`、`a_ack_timeout`、`a_retries`、`a_timeout`、`a_write_gap`、`a_max_request_bytes`、`a_window_keywords`、`a_log_level`、`a_log_dir`）
+- `b_*`: B 端参数（`b_target`、`b_chunk_bytes`、`b_ack_timeout`、`b_retries`、`b_timeout`、`b_log_level`、`b_log_dir`）
+
+优先级：**命令行参数 > config.yaml > 内置默认值**。Python 入口支持 `--config <path>` 指定其他配置文件（默认自动读取仓库根的 `config.yaml`）。
+
+### 启动脚本
+
+仓库根目录提供启动脚本（`%~dp0` 自动定位，仓库拷到任何位置都能用；自动读取 `config.yaml` 里的 `python` 路径和各项参数）：
 
 ```text
-start_a.bat   # A 端：监听 0.0.0.0:9999（Windows VM，嵌入版 C:\Python311，供 Mac 访问）
-start_b.bat   # B 端：转发 192.168.21.14:8888（云桌面，安装版 python）
+start_a.bat   # A 端：监听 0.0.0.0:9999（Windows VM，供 Mac 访问）
+start_b.bat   # B 端：转发 192.168.21.14:8888（云桌面）
 ```
 
-双击即可启动；也可以在后面追加参数，例如 `start_a.bat --log-level DEBUG`。
+双击即可启动；也可以在后面追加参数临时覆盖，例如 `start_a.bat --log-level DEBUG`。
 
 等价的手动命令：
 
 A 端（能访问 HSRClient 窗口的机器）：
 
 ```powershell
-python a_end/a_proxy.py --listen 127.0.0.1:9999
+python a_end/a_proxy.py --config config.yaml
 ```
 
 B 端（云桌面）：
 
 ```powershell
-python b_end/b_tunnel.py --target 192.168.21.14:8888
+python b_end/b_tunnel.py --config config.yaml
 ```
 
 然后将 Git remote 临时指向：

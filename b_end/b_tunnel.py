@@ -12,23 +12,39 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from qtc_tunnel.clipboard import ClipboardEndpoint, WindowsClipboard
+from qtc_tunnel.config import load_config, side_defaults
 from qtc_tunnel.git_transport import ClipboardGitServer
 from qtc_tunnel.logging_utils import log_event, log_exception, setup_logging
 
 
 def main():
+    project_root = Path(__file__).resolve().parent.parent
+    preparse = argparse.ArgumentParser(add_help=False)
+    preparse.add_argument("--config", default=None,
+                          help="config.yaml 路径（默认：<项目根>\\config.yaml 若存在）")
+    known, _ = preparse.parse_known_args()
+    config_path = Path(known.config) if known.config else (
+        project_root / "config.yaml" if (project_root / "config.yaml").is_file() else None)
+    defaults = side_defaults(load_config(config_path), "b")
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", required=True, help="internal Git host:port")
-    parser.add_argument("--chunk-bytes", type=int, default=256 * 1024)
-    parser.add_argument("--ack-timeout", type=float, default=5.0)
-    parser.add_argument("--retries", type=int, default=5)
-    parser.add_argument("--timeout", type=float, default=300.0)
-    parser.add_argument("--log-level", default="INFO",
+    parser.add_argument("--config", default=str(config_path) if config_path else None,
+                        help="config.yaml 路径（默认：<项目根>\\config.yaml 若存在）")
+    parser.add_argument("--target", default=defaults.get("target"),
+                        help="internal Git host:port (or set b_target in config.yaml)")
+    parser.add_argument("--chunk-bytes", type=int,
+                        default=defaults.get("chunk_bytes", 256 * 1024))
+    parser.add_argument("--ack-timeout", type=float,
+                        default=defaults.get("ack_timeout", 5.0))
+    parser.add_argument("--retries", type=int, default=defaults.get("retries", 5))
+    parser.add_argument("--timeout", type=float, default=defaults.get("timeout", 300.0))
+    parser.add_argument("--log-level", default=defaults.get("log_level", "INFO"),
                         choices=("DEBUG", "INFO", "WARNING", "ERROR"))
-    parser.add_argument("--log-dir", default="",
+    parser.add_argument("--log-dir", default=defaults.get("log_dir", ""),
                         help="log directory (default: <project>\\logs)")
     args = parser.parse_args()
-    project_root = Path(__file__).resolve().parent.parent
+    if not args.target:
+        parser.error("--target is required (or set b_target in config.yaml)")
     logger, log_path = setup_logging(
         side="B", project_root=project_root, log_level=args.log_level,
         log_dir=Path(args.log_dir) if args.log_dir else None)

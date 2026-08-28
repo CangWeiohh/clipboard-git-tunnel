@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from qtc_tunnel.clipboard import ClipboardEndpoint, WindowsClipboard
+from qtc_tunnel.config import load_config, side_defaults
 from qtc_tunnel.focus import WindowsHSRFocus
 from qtc_tunnel.git_transport import ClipboardGitClient
 from qtc_tunnel.logging_utils import log_event, log_exception, safe_http_path, setup_logging
@@ -96,24 +97,38 @@ class AProxy(ThreadingHTTPServer):
 
 
 def main():
+    project_root = Path(__file__).resolve().parent.parent
+    preparse = argparse.ArgumentParser(add_help=False)
+    preparse.add_argument("--config", default=None,
+                          help="config.yaml 路径（默认：<项目根>\\config.yaml 若存在）")
+    known, _ = preparse.parse_known_args()
+    config_path = Path(known.config) if known.config else (
+        project_root / "config.yaml" if (project_root / "config.yaml").is_file() else None)
+    defaults = side_defaults(load_config(config_path), "a")
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--listen", default="127.0.0.1:9999")
-    parser.add_argument("--chunk-bytes", type=int, default=256 * 1024)
-    parser.add_argument("--ack-timeout", type=float, default=5.0)
-    parser.add_argument("--retries", type=int, default=5)
-    parser.add_argument("--timeout", type=float, default=300.0)
-    parser.add_argument("--write-gap", type=float, default=4.0,
+    parser.add_argument("--config", default=str(config_path) if config_path else None,
+                        help="config.yaml 路径（默认：<项目根>\\config.yaml 若存在）")
+    parser.add_argument("--listen", default=defaults.get("listen", "127.0.0.1:9999"))
+    parser.add_argument("--chunk-bytes", type=int,
+                        default=defaults.get("chunk_bytes", 256 * 1024))
+    parser.add_argument("--ack-timeout", type=float,
+                        default=defaults.get("ack_timeout", 5.0))
+    parser.add_argument("--retries", type=int, default=defaults.get("retries", 5))
+    parser.add_argument("--timeout", type=float, default=defaults.get("timeout", 300.0))
+    parser.add_argument("--write-gap", type=float, default=defaults.get("write_gap", 4.0),
                         help="min seconds between A-side clipboard writes across "
                              "requests (HSR single-slot guard; ~propagation time)")
-    parser.add_argument("--max-request-bytes", type=int, default=64 * 1024 * 1024)
-    parser.add_argument("--window-keywords", default="",
+    parser.add_argument("--max-request-bytes", type=int,
+                        default=defaults.get("max_request_bytes", 64 * 1024 * 1024))
+    parser.add_argument("--window-keywords",
+                        default=defaults.get("window_keywords", ""),
                         help="comma-separated HSRClient window title keywords")
-    parser.add_argument("--log-level", default="INFO",
+    parser.add_argument("--log-level", default=defaults.get("log_level", "INFO"),
                         choices=("DEBUG", "INFO", "WARNING", "ERROR"))
-    parser.add_argument("--log-dir", default="",
+    parser.add_argument("--log-dir", default=defaults.get("log_dir", ""),
                         help="log directory (default: <project>\\logs)")
     args = parser.parse_args()
-    project_root = Path(__file__).resolve().parent.parent
     logger, log_path = setup_logging(
         side="A", project_root=project_root, log_level=args.log_level,
         log_dir=Path(args.log_dir) if args.log_dir else None)
