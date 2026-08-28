@@ -138,11 +138,13 @@ class ClipboardEndpoint:
     """Polling endpoint that filters malformed, stale, or unrelated frames."""
 
     def __init__(self, backend: ClipboardBackend, poll_interval: float = 0.05,
-                 focus: object | None = None) -> None:
+                 focus: object | None = None, min_write_gap: float = 0.0) -> None:
         self.backend = backend
         self.poll_interval = poll_interval
         self.focus = focus
+        self.min_write_gap = float(min_write_gap)
         self._last_text = None
+        self._last_write_time = 0.0
 
     def write_frame(self, frame: Frame) -> None:
         text = frame.to_text()
@@ -150,6 +152,24 @@ class ClipboardEndpoint:
             self.focus.before_clipboard_write()
         self.backend.write(text)
         self._last_text = text
+        self._last_write_time = time.monotonic()
+
+    def wait_write_gap(self) -> None:
+        """Enforce a quiet period since this endpoint's previous clipboard write.
+
+        HSR clipboard sync is a single-slot, event-driven channel: two
+        consecutive writes from the same side inside one propagation window can
+        silently drop one of them. stop-and-wait ACKs pace writes *within* a
+        request, but the first frame of a new request can follow the previous
+        request's final ACK within milliseconds (e.g. git clone's GET followed
+        immediately by its POST). Callers must invoke this before starting a
+        new exchange so consecutive same-side writes are at least one
+        propagation round trip apart.
+        """
+        wait = self.min_write_gap - (time.monotonic() - self._last_write_time)
+        if wait > 0:
+            print(f"[qtc] write gap: sleeping {wait:.2f}s", flush=True)
+            time.sleep(wait)
 
     def wait_frame(self, predicate: Callable[[Frame], bool], timeout: float) -> Frame:
         deadline = time.monotonic() + timeout

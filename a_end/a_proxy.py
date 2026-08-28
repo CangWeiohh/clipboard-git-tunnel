@@ -38,6 +38,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
         session = uuid.uuid4().hex
         try:
             with tunnel.lock:
+                # Guard the cross-request boundary: git fires the next request
+                # within milliseconds of the previous one completing (e.g.
+                # clone's GET -> POST). HSR drops back-to-back same-side
+                # clipboard writes inside one propagation window, so the first
+                # write of a new exchange must be spaced from the previous
+                # request's final ACK.
+                tunnel.client.endpoint.wait_write_gap()
                 response = tunnel.client.request(
                     session, self.command, self.path, headers, body, tunnel.timeout)
         except TimeoutError as exc:
@@ -78,6 +85,9 @@ def main():
     parser.add_argument("--ack-timeout", type=float, default=5.0)
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("--write-gap", type=float, default=4.0,
+                        help="min seconds between A-side clipboard writes across "
+                             "requests (HSR single-slot guard; ~propagation time)")
     parser.add_argument("--max-request-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--window-keywords", default="",
                         help="comma-separated HSRClient window title keywords")
@@ -85,7 +95,8 @@ def main():
     host, port = args.listen.rsplit(":", 1)
     keywords = [item.strip() for item in args.window_keywords.split(",") if item.strip()]
     focus = WindowsHSRFocus(keywords=keywords or None)
-    endpoint = ClipboardEndpoint(WindowsClipboard(), focus=focus)
+    endpoint = ClipboardEndpoint(WindowsClipboard(), focus=focus,
+                                 min_write_gap=args.write_gap)
     client = ClipboardGitClient(endpoint, chunk_bytes=args.chunk_bytes,
                                  ack_timeout=args.ack_timeout, retries=args.retries)
     server = AProxy((host, int(port)), client, args.timeout, args.max_request_bytes)

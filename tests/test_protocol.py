@@ -27,6 +27,23 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(reassemble(frames), b"0123456789")
         self.assertEqual(frames[-1].total, 4)
 
+    def test_write_gap_sleeps_when_required(self):
+        import time as _time
+        endpoint = ClipboardEndpoint(MemoryClipboard(), min_write_gap=0.2)
+        endpoint.write_frame(make_frame("ack", "s1"))
+        started = _time.monotonic()
+        endpoint.wait_write_gap()
+        self.assertGreaterEqual(_time.monotonic() - started, 0.18)
+
+    def test_write_gap_no_sleep_when_elapsed(self):
+        import time as _time
+        endpoint = ClipboardEndpoint(MemoryClipboard(), min_write_gap=0.01)
+        endpoint.write_frame(make_frame("ack", "s1"))
+        _time.sleep(0.05)
+        started = _time.monotonic()
+        endpoint.wait_write_gap()
+        self.assertLess(_time.monotonic() - started, 0.01)
+
 
 class _GitHandler(BaseHTTPRequestHandler):
     def do_POST(self):

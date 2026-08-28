@@ -156,3 +156,8 @@ class WindowsHSRFocus(FocusController):
                     self.user32.keybd_event(0x12, 0, 0x0002, None)
                 self.user32.BringWindowToTop(target)
                 self.user32.SetForegroundWindow(target)
+                if self.user32.GetForegroundWindow() != target:
+                    if now - self._last_warning >= 5.0:
+                        self._last_warning = now
+                        print("[focus] WARNING: could not foreground HSRClient "
+                              "(clipboard writes may not cross to B)", flush=True)
