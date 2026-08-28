@@ -33,11 +33,18 @@ class ClipboardGitClient:
     def _receive_set(self, kind: str, session: str, timeout: float) -> list[Frame]:
         frames: list[Frame] = []
         while True:
-            frame = self.endpoint.wait_frame(
-                lambda item: item.session == session and item.kind == kind,
-                timeout,
-            )
+            try:
+                frame = self.endpoint.wait_frame(
+                    lambda item: item.session == session and item.kind in {kind, "error"},
+                    timeout,
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"clipboard receive timeout kind={kind} session={session[:8]}") from exc
             self.endpoint.acknowledge(frame)
+            if frame.kind == "error":
+                error = parse_json_payload(frame.payload)
+                raise RuntimeError(error.get("message", "remote tunnel error"))
             frames.append(frame)
             if frame.seq == frame.total - 1:
                 return frames
@@ -54,6 +61,11 @@ class ClipboardGitClient:
         self._send_frames("req_data", session, body)
         end = Frame("req_end", session, 0, 1, b"", None)
         self.endpoint.send_and_wait_ack(end, self.ack_timeout, self.retries)
+        # Barrier for the final request ACK. HSR clipboard propagation can be
+        # slower than the local B-end code path; without this confirmation B
+        # could overwrite req_end's ACK with the response before A observes it.
+        commit = Frame("req_commit", session, 0, 1, b"", None)
+        self.endpoint.send_and_wait_ack(commit, self.ack_timeout, self.retries)
 
         response_meta = parse_json_payload(
             reassemble(self._receive_set("resp_meta", session, timeout)))
@@ -134,6 +146,11 @@ class ClipboardGitServer:
             timeout,
         )
         self.endpoint.acknowledge(end)
+        commit = self.endpoint.wait_frame(
+            lambda item: item.session == session and item.kind == "req_commit",
+            timeout,
+        )
+        self.endpoint.acknowledge(commit)
         return method, path, headers, reassemble(data)
 
     def _forward(self, method: str, path: str, headers: list[tuple[str, str]], body: bytes) -> HttpMessage:
@@ -174,3 +191,4 @@ class ClipboardGitServer:
                 self.endpoint.send_and_wait_ack(error, self.ack_timeout, self.retries)
             except Exception:
                 pass
+            raise

@@ -10,7 +10,7 @@ from dataclasses import replace
 from ctypes import wintypes
 from typing import Callable
 
-from .protocol import Frame, ProtocolError
+from .protocol import Frame, ProtocolError, parse_json_payload
 
 
 class ClipboardError(RuntimeError):
@@ -167,16 +167,25 @@ class ClipboardEndpoint:
             outbound = replace(frame, retry=attempt - 1)
             self.write_frame(outbound)
             try:
-                self.wait_frame(
-                    lambda candidate: candidate.kind == "ack"
-                    and candidate.session == frame.session
-                    and candidate.seq == frame.seq,
+                reply = self.wait_frame(
+                    lambda candidate: candidate.session == frame.session
+                    and candidate.seq == frame.seq
+                    and candidate.kind in {"ack", "error"},
                     timeout,
                 )
+                if reply.kind == "error":
+                    try:
+                        details = parse_json_payload(reply.payload)
+                    except ProtocolError:
+                        details = {"message": "remote returned malformed error"}
+                    self.acknowledge(reply)
+                    raise ClipboardError(details.get("message", "remote clipboard error"))
                 return
-            except TimeoutError:
+            except TimeoutError as exc:
                 if attempt == retries:
-                    raise
+                    raise TimeoutError(
+                        f"clipboard ACK timeout kind={frame.kind} seq={frame.seq} "
+                        f"attempts={retries}") from exc
 
     def acknowledge(self, frame: Frame) -> None:
         ack = Frame("ack", frame.session, frame.seq, frame.total, b"", None)

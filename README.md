@@ -37,6 +37,8 @@ A  ← ACK
 ...
 A  REQ_END   → B
 A  ← ACK
+A  REQ_COMMIT → B
+A  ← ACK
 
 B  RESP_META → A
 B  ← ACK
@@ -50,7 +52,7 @@ B  ← ACK
 线格式为 `QTC1:<base64(JSON)>`。JSON 字段包括：
 
 - `v`: `qtc-clipboard-1`
-- `kind`: `req_meta`、`req_data`、`req_end`、`resp_meta`、`resp_data`、`resp_end`、`ack`、`error`
+- `kind`: `req_meta`、`req_data`、`req_end`、`req_commit`、`resp_meta`、`resp_data`、`resp_end`、`ack`、`error`
 - `session`: 每次 HTTP 请求唯一 ID
 - `seq` / `total`: 分块序号
 - `payload`: Base64 数据

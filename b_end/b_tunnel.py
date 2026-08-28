@@ -36,7 +36,9 @@ def main():
         except KeyboardInterrupt:
             break
         except Exception as exc:
-            print(f"[B] request failed: {exc}", flush=True)
+            import traceback
+            print(f"[B] request failed: {exc!r}", flush=True)
+            traceback.print_exc()
             time.sleep(0.5)
 
 
