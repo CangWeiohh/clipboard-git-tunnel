@@ -206,8 +206,14 @@ class ClipboardGitServer:
         finally:
             connection.close()
 
-    def serve_one(self, timeout: float = 300.0) -> None:
-        first = self.endpoint.wait_frame(lambda item: item.kind == "req_meta", timeout)
+    def serve_one(self, timeout: float = 300.0) -> bool:
+        try:
+            first = self.endpoint.wait_frame(lambda item: item.kind == "req_meta", timeout)
+        except TimeoutError:
+            # Normal idle period: no Git request arrived within the poll
+            # window. This is not a transport failure and must not produce a
+            # traceback every --timeout seconds.
+            return False
         session = first.session
         try:
             method, path, headers, body = self._receive_request(first, timeout)
@@ -230,6 +236,7 @@ class ClipboardGitServer:
                 # pipelined client retry would 504. Fall through and pick up
                 # the next request.
                 pass
+            return True
         except Exception as exc:
             error = Frame("error", session, 0, 1,
                           json_payload({"message": str(exc)[:500]}), None)

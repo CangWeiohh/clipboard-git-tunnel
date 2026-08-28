@@ -111,6 +111,13 @@ class _GitHandler(BaseHTTPRequestHandler):
 
 
 class TransportTests(unittest.TestCase):
+    def test_server_idle_timeout_is_normal(self):
+        endpoint = ClipboardEndpoint(MemoryClipboard(), poll_interval=0.001)
+        server = ClipboardGitServer(
+            endpoint, chunk_bytes=3, ack_timeout=1, retries=3,
+            target_host="127.0.0.1", target_port=1, upstream_timeout=1)
+        self.assertFalse(server.serve_one(timeout=0.02))
+
     def test_bidirectional_http_round_trip(self):
         clipboard = MemoryClipboard()
         a_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)

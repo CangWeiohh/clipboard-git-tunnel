@@ -31,8 +31,9 @@ def main():
     print(f"[B] Clipboard Git Tunnel forwarding to {args.target}", flush=True)
     while True:
         try:
-            server.serve_one(args.timeout)
-            print("[B] request completed", flush=True)
+            handled = server.serve_one(args.timeout)
+            if handled:
+                print("[B] request completed", flush=True)
         except KeyboardInterrupt:
             break
         except Exception as exc:
