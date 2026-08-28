@@ -111,7 +111,7 @@ def main():
                         help="config.yaml 路径（默认：<项目根>\\config.yaml 若存在）")
     parser.add_argument("--listen", default=defaults.get("listen", "127.0.0.1:9999"))
     parser.add_argument("--chunk-bytes", type=int,
-                        default=defaults.get("chunk_bytes", 256 * 1024))
+                        default=defaults.get("chunk_bytes", 800 * 1024))
     parser.add_argument("--ack-timeout", type=float,
                         default=defaults.get("ack_timeout", 5.0))
     parser.add_argument("--retries", type=int, default=defaults.get("retries", 5))
