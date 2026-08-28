@@ -30,11 +30,15 @@ class WindowsClipboard(ClipboardBackend):
 
     CF_UNICODETEXT = 13
 
-    def __init__(self, retries: int = 20, delay: float = 0.01) -> None:
+    def __init__(self, retries: int = 750, delay: float = 0.02) -> None:
         if os.name != "nt":
             raise ClipboardError("WindowsClipboard requires Windows")
         self.retries = retries
         self.delay = delay
+        # HSR holds the clipboard open while syncing large frames (256 KiB
+        # payloads take seconds to move), so local OpenClipboard calls must be
+        # willing to wait well beyond the old 200 ms budget or every request
+        # that collides with an in-flight sync dies with OpenClipboard failed.
         self._lock = threading.RLock()
         self.user32 = ctypes.windll.user32
         self.kernel32 = ctypes.windll.kernel32
@@ -55,11 +59,17 @@ class WindowsClipboard(ClipboardBackend):
         self.GMEM_MOVEABLE = 0x0002
 
     def _open(self) -> None:
-        for _ in range(self.retries):
+        warned = False
+        for attempt in range(self.retries):
             if self.user32.OpenClipboard(None):
                 return
+            if not warned and attempt * self.delay >= 2.0:
+                warned = True
+                print(f"[clipboard] warning: clipboard busy {(attempt * self.delay):.1f}s "
+                      "(HSR syncing?)", flush=True)
             time.sleep(self.delay)
-        raise ClipboardError("OpenClipboard failed")
+        raise ClipboardError(
+            f"OpenClipboard failed (busy > {self.retries * self.delay:.0f}s)")
 
     def read(self) -> str:
         with self._lock:
