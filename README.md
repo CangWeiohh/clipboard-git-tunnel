@@ -77,7 +77,7 @@ python -m unittest discover -s tests -v
 
 仓库根目录的 `config.yaml` 集中管理所有可调参数，A/B 两端和启动脚本共用：
 
-- `python`: Python 解释器绝对路径；留空 `""` 则使用 PATH 中的 `python`
+- `a_python` / `b_python`: A/B 端各自 Python 解释器绝对路径；留空 `""` 则使用 PATH 中的 `python`
 - `a_*`: A 端参数（`a_listen`、`a_chunk_bytes`、`a_ack_timeout`、`a_retries`、`a_timeout`、`a_write_gap`、`a_max_request_bytes`、`a_window_keywords`、`a_log_level`、`a_log_dir`）
 - `b_*`: B 端参数（`b_target`、`b_chunk_bytes`、`b_ack_timeout`、`b_retries`、`b_timeout`、`b_log_level`、`b_log_dir`）
 

@@ -2,9 +2,11 @@
 # 本文件被 start_a.bat / start_b.bat 与 a_end/a_proxy.py、b_end/b_tunnel.py 读取。
 # CLI 参数 > config.yaml > 内置默认值。
 
-# Python 解释器绝对路径；留空 "" 则使用 PATH 中的 python。
-# 仅 start_*.bat 使用（决定用哪个解释器启动）。
-python: ""
+# ---------------- Python 解释器 ----------------
+# A/B 端各自指定解释器绝对路径；留空 "" 则使用 PATH 中的 python。
+# 仅 start_a.bat / start_b.bat 使用（决定用哪个解释器启动）。
+a_python: "C:\Python311\python.exe"
+b_python: ""
 
 # ---------------- A 端（start_a.bat / a_end\a_proxy.py） ----------------
 # A 端 HTTP 代理监听地址。Mac IDEA 访问需监听 0.0.0.0；仅供本机可用 127.0.0.1。

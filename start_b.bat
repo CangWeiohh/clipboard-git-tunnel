@@ -6,9 +6,9 @@ cd /d "%~dp0"
 
 set "PY_EXE=python"
 if exist "%~dp0config.yaml" (
-    for /f "usebackq delims=" %%L in (`findstr /b /c:"python:" "%~dp0config.yaml"`) do set "CFG_PY_LINE=%%L"
+    for /f "usebackq delims=" %%L in (`findstr /b /c:"b_python:" "%~dp0config.yaml"`) do set "CFG_PY_LINE=%%L"
     if defined CFG_PY_LINE (
-        set "CFG_PY=%CFG_PY_LINE:*python:=%"
+        set "CFG_PY=%CFG_PY_LINE:*b_python:=%"
         if defined CFG_PY set "CFG_PY=%CFG_PY: =%"
         if defined CFG_PY set "CFG_PY=%CFG_PY:"=%"
         if defined CFG_PY set "PY_EXE=%CFG_PY%"

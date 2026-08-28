@@ -13,7 +13,8 @@ class ConfigTests(unittest.TestCase):
             path = Path(tmp) / "config.yaml"
             path.write_text(
                 "# header comment\n"
-                'python: "C:\\Python311\\python.exe"\n'
+                'a_python: "C:\\Python311\\python.exe"\n'
+                'b_python: ""\n'
                 "a_listen: 0.0.0.0:9999\n"
                 "a_chunk_bytes: 262144\n"
                 "a_ack_timeout: 5.0\n"
@@ -27,7 +28,8 @@ class ConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             config = load_config(path)
-            self.assertEqual(config["python"], r"C:\Python311\python.exe")
+            self.assertEqual(config["a_python"], r"C:\Python311\python.exe")
+            self.assertEqual(config["b_python"], "")
             self.assertEqual(config["a_listen"], "0.0.0.0:9999")
             self.assertEqual(config["a_chunk_bytes"], 262144)
             self.assertIsInstance(config["a_chunk_bytes"], int)
@@ -39,8 +41,9 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config["b_target"], "192.168.21.14:8888")
 
     def test_side_defaults_maps_prefixes(self):
-        config = {"a_chunk_bytes": 1, "b_chunk_bytes": 2, "python": ""}
-        self.assertEqual(side_defaults(config, "a"), {"chunk_bytes": 1})
+        config = {"a_chunk_bytes": 1, "b_chunk_bytes": 2, "a_python": ""}
+        self.assertEqual(side_defaults(config, "a"),
+                         {"chunk_bytes": 1, "python": ""})
         self.assertEqual(side_defaults(config, "b"), {"chunk_bytes": 2})
 
     def test_missing_or_empty_file(self):
