@@ -173,6 +173,56 @@ class ClipboardGitClient:
         self.retries = retries
         self.logger = logger or logging.getLogger("clipboard_git_tunnel.client")
 
+    def wait_for_peer(self, session: str, timeout: float | None = None) -> int:
+        """Block until B acknowledges a startup probe.
+
+        This validates B process readiness plus both HSR clipboard directions
+        before A opens its HTTP listener. A may start before B: retries use the
+        same session with an increasing retry field, so a B endpoint that
+        baselines the current clipboard at startup ignores only the in-flight
+        probe and observes the next changed probe.
+        """
+        started = time.monotonic()
+        deadline = None if timeout is None else started + timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            self.endpoint.wait_write_gap()
+            log_event(self.logger, logging.INFO, "peer.probe.send",
+                      session=session[:8], attempt=attempt,
+                      elapsed_ms=int((time.monotonic() - started) * 1000))
+            self.endpoint.write_frame(
+                Frame("peer_probe", session, 0, 1, b"", None,
+                      retry=attempt - 1))
+            wait_timeout = self.ack_timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"peer startup timeout session={session[:8]} "
+                        f"attempts={attempt}")
+                wait_timeout = min(wait_timeout, remaining)
+            try:
+                self.endpoint.wait_frame(
+                    lambda item: item.session == session
+                    and item.seq == 0 and item.kind == "ack",
+                    wait_timeout,
+                )
+            except TimeoutError:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"peer startup timeout session={session[:8]} "
+                        f"attempts={attempt}") from None
+                log_event(self.logger, logging.WARNING, "peer.waiting",
+                          session=session[:8], attempt=attempt,
+                          elapsed_ms=int((time.monotonic() - started) * 1000),
+                          hint="B/HSR not ready yet; retrying automatically")
+                continue
+            log_event(self.logger, logging.INFO, "peer.ready",
+                      session=session[:8], attempts=attempt,
+                      elapsed_ms=int((time.monotonic() - started) * 1000))
+            return attempt
+
     def _send_frames(self, kind: str, session: str, payload: bytes) -> None:
         for frame in frame_chunks(kind, session, payload, self.chunk_bytes):
             self.endpoint.send_and_wait_ack(frame, self.ack_timeout, self.retries)
@@ -577,12 +627,18 @@ class ClipboardGitServer:
     def serve_one(self, timeout: float = 300.0) -> bool:
         try:
             first = self.endpoint.wait_frame(
-                lambda item: item.kind in {"req_meta", "req_single"}, timeout)
+                lambda item: item.kind in {"peer_probe", "req_meta", "req_single"},
+                timeout)
         except TimeoutError:
             # Normal idle period: no Git request arrived within the poll
             # window. This is not a transport failure and must not produce a
             # traceback every --timeout seconds.
             return False
+        if first.kind == "peer_probe":
+            self.endpoint.acknowledge(first)
+            log_event(self.logger, logging.INFO, "peer.probe.ack",
+                      session=first.session[:8], retry=first.retry)
+            return True
         session = first.session
         try:
             # ---- Request phase: single-frame vs multi-frame ----

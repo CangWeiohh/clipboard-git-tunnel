@@ -69,7 +69,7 @@ B  RESP_END  → A
 线格式为 `QTC1:<base64(JSON)>`。JSON 字段包括：
 
 - `v`: `qtc-clipboard-1`
-- `kind`: `req_meta`、`req_data`、`req_end`、`req_commit`、`req_single`、`resp_begin`、`resp_meta`、`resp_data`、`resp_end`、`resp_single`、`ack`、`error`
+- `kind`: `peer_probe`（启动就绪探针）、`req_meta`、`req_data`、`req_end`、`req_commit`、`req_single`、`resp_begin`、`resp_meta`、`resp_data`、`resp_end`、`resp_single`、`ack`、`error`
 - `session`: 每次 HTTP 请求唯一 ID
 - `seq` / `total`: 分块序号
 - `payload`: Base64 数据
@@ -110,6 +110,8 @@ start_b.bat   # B 端：转发 192.168.21.14:8888（云桌面）
 ```
 
 双击即可启动；也可以在后面追加参数临时覆盖，例如 `start_a.bat --log-level DEBUG`。
+
+**启动顺序无需人工等待**：A 启动后先用 `peer_probe → ack` 自动验证 B 进程及 HSR 双向剪贴板，只有握手成功（日志 `peer.ready`）才开放 9999 并打印 `listener.ready`。因此可以先启 B 再立即启 A，也可以先启 A（A 会持续重试等待 B/HSR，期间 Mac/IDEA 无法连入 9999，不会先收请求再 25s 504）。看到 A 的 `listener.ready` 后即可使用。
 
 等价的手动命令：
 

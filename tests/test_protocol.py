@@ -245,6 +245,57 @@ class StaleAndBaselineTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def test_startup_probe_succeeds_when_b_is_already_running(self):
+        clipboard = MemoryClipboard()
+        a_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        b_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        server = ClipboardGitServer(
+            b_endpoint, chunk_bytes=819200, ack_timeout=0.1, retries=1,
+            target_host="127.0.0.1", target_port=1, upstream_timeout=1)
+        thread = threading.Thread(
+            target=server.serve_one, kwargs={"timeout": 2}, daemon=True)
+        thread.start()
+        client = ClipboardGitClient(
+            a_endpoint, chunk_bytes=819200, ack_timeout=0.2, retries=1)
+        attempts = client.wait_for_peer("probe-b-first", timeout=2)
+        thread.join(2)
+        self.assertEqual(attempts, 1)
+        self.assertFalse(thread.is_alive())
+
+    def test_startup_probe_retries_when_a_starts_before_b(self):
+        # A writes probes before B exists. B's endpoint baselines the current
+        # probe at startup, but the next probe has a different retry field and
+        # must be observed/ACKed automatically.
+        clipboard = MemoryClipboard()
+        a_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        client = ClipboardGitClient(
+            a_endpoint, chunk_bytes=819200, ack_timeout=0.05, retries=1)
+        result: list[int | Exception] = []
+
+        def wait_for_peer():
+            try:
+                result.append(client.wait_for_peer("probe-a-first", timeout=2))
+            except Exception as exc:  # pragma: no cover - should not raise
+                result.append(exc)
+
+        client_thread = threading.Thread(target=wait_for_peer, daemon=True)
+        client_thread.start()
+        time.sleep(0.12)  # allow several probes before B baselines clipboard
+        b_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        server = ClipboardGitServer(
+            b_endpoint, chunk_bytes=819200, ack_timeout=0.1, retries=1,
+            target_host="127.0.0.1", target_port=1, upstream_timeout=1)
+        server_thread = threading.Thread(
+            target=server.serve_one, kwargs={"timeout": 2}, daemon=True)
+        server_thread.start()
+        client_thread.join(3)
+        server_thread.join(3)
+        self.assertFalse(client_thread.is_alive())
+        self.assertFalse(server_thread.is_alive())
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], int)
+        self.assertGreaterEqual(result[0], 2)
+
     def test_server_idle_timeout_is_normal(self):
         endpoint = ClipboardEndpoint(MemoryClipboard(), poll_interval=0.001)
         server = ClipboardGitServer(

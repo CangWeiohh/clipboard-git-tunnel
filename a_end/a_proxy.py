@@ -145,6 +145,17 @@ def main():
     client = ClipboardGitClient(endpoint, chunk_bytes=args.chunk_bytes,
                                 ack_timeout=args.ack_timeout, retries=args.retries,
                                 logger=logger)
+    # Do not expose the HTTP listener until B plus both HSR clipboard
+    # directions are actually ready. This replaces the manual ritual of
+    # starting B, waiting for several heartbeat lines, then starting A.
+    log_event(logger, logging.INFO, "listener.waiting_for_peer",
+              address=args.listen)
+    try:
+        client.wait_for_peer(uuid.uuid4().hex)
+    except KeyboardInterrupt:
+        log_event(logger, logging.INFO, "process.stop",
+                  reason="keyboard_interrupt_while_waiting_for_peer")
+        return
     server = AProxy((host, int(port)), client, args.timeout, args.max_request_bytes, logger)
     log_event(logger, logging.INFO, "listener.ready", address=args.listen,
               log_path=str(log_path))
