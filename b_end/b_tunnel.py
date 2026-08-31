@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import threading
 import time
@@ -15,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from qtc_tunnel.clipboard import ClipboardEndpoint, WindowsClipboard
 from qtc_tunnel.config import load_config, side_defaults
-from qtc_tunnel.focus import WindowsHSRFocus
 from qtc_tunnel.git_transport import ClipboardGitServer
 from qtc_tunnel.logging_utils import log_event, log_exception, setup_logging
 
@@ -47,9 +45,6 @@ def main():
     parser.add_argument("--upstream-idle-timeout", type=float,
                         default=defaults.get("upstream_idle_timeout", 2.0),
                         help="max seconds without upstream response body data")
-    parser.add_argument("--window-keywords",
-                        default=defaults.get("window_keywords", ""),
-                        help="comma-separated HSRClient window title keywords")
     parser.add_argument("--log-level", default=defaults.get("log_level", "INFO"),
                         choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     parser.add_argument("--log-dir", default=defaults.get("log_dir", ""),
@@ -68,15 +63,11 @@ def main():
               upstream_idle_timeout_s=args.upstream_idle_timeout,
               log_path=str(log_path))
     target_host, target_port = args.target.rsplit(":", 1)
-    keywords = [item.strip() for item in args.window_keywords.split(",") if item.strip()]
-    focus = None
-    if os.name == "nt":
-        # Keep the cloud-desktop HSRClient window foreground before every
-        # B-side clipboard write: HSR skips clipboard sync while its render
-        # window is not active, exactly as on the A side.
-        focus = WindowsHSRFocus(keywords=keywords or None, logger=logger)
-    endpoint = ClipboardEndpoint(WindowsClipboard(logger=logger), focus=focus,
-                                 logger=logger)
+    # NOTE: no focus controller on B. The HSR client (and its foreground
+    # requirement) exists only in the A-end environment; the cloud desktop B
+    # has no HSR window by design, so scanning for one would only produce
+    # misleading focus.hsr_not_found noise (round 10 lesson).
+    endpoint = ClipboardEndpoint(WindowsClipboard(logger=logger), logger=logger)
     server = ClipboardGitServer(endpoint, chunk_bytes=args.chunk_bytes,
                                 ack_timeout=args.ack_timeout, retries=args.retries,
                                 target_host=target_host, target_port=int(target_port),
