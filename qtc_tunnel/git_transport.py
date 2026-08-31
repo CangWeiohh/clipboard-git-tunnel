@@ -41,6 +41,39 @@ from .protocol import Frame, ProtocolError, digest, json_payload, make_frame, pa
 from .transfer import frame_chunks, reassemble
 
 
+STALE_REQUEST_AFTER_SECONDS = 60.0
+
+
+class StaleRequest(Exception):
+    """Raised when a request has been delayed in the clipboard queue."""
+
+
+def request_created_at(payload: bytes) -> float | None:
+    """Read the optional creation timestamp from a packed request."""
+    if len(payload) < 4:
+        return None
+    try:
+        meta_len = struct.unpack(">I", payload[:4])[0]
+        if len(payload) < 4 + meta_len:
+            return None
+        value = parse_json_payload(payload[4:4 + meta_len]).get("created_at")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+    except (ProtocolError, struct.error, ValueError, OverflowError):
+        return None
+
+
+def ensure_request_fresh(payload: bytes, *, now: float | None = None) -> None:
+    """Reject requests that sat in the clipboard queue too long."""
+    created_at = request_created_at(payload)
+    if created_at is None:
+        return
+    age = (time.time() if now is None else now) - created_at
+    if age > STALE_REQUEST_AFTER_SECONDS:
+        raise StaleRequest(f"request is stale by {age:.1f}s")
+
+
 # ---------------------------------------------------------------------------
 # Packed single-frame payload helpers
 # ---------------------------------------------------------------------------
@@ -49,13 +82,17 @@ from .transfer import frame_chunks, reassemble
 # double-encoded — it rides inside the frame payload alongside the meta JSON.
 
 def pack_request(method: str, path: str,
-                 headers: list[tuple[str, str]], body: bytes) -> bytes:
+                 headers: list[tuple[str, str]], body: bytes,
+                 *, created_at: float | None = None) -> bytes:
     """Pack a complete HTTP request into a single binary payload."""
-    meta = json_payload({
+    request_meta = {
         "method": method,
         "path": path,
         "headers": [[name, value] for name, value in headers],
-    })
+    }
+    if created_at is not None:
+        request_meta["created_at"] = created_at
+    meta = json_payload(request_meta)
     return struct.pack(">I", len(meta)) + meta + body
 
 
@@ -194,12 +231,13 @@ class ClipboardGitClient:
                 headers: list[tuple[str, str]], body: bytes,
                 timeout: float) -> HttpMessage:
         started = time.monotonic()
+        created_at = time.time()
         log_event(self.logger, logging.INFO, "http.request.begin",
                   session=session[:8], method=method, path=safe_http_path(path),
                   request_bytes=len(body))
 
         # ---- Request phase: single-frame vs multi-frame ----
-        packed_req = pack_request(method, path, headers, body)
+        packed_req = pack_request(method, path, headers, body, created_at=created_at)
         if len(packed_req) <= self.chunk_bytes:
             # Single-frame request: one write + one ACK replaces
             # req_meta + req_data + req_end + req_commit (4 round-trips → 1).
@@ -211,6 +249,7 @@ class ClipboardGitClient:
                 "method": method,
                 "path": path,
                 "headers": [[name, value] for name, value in headers],
+                "created_at": created_at,
             })
             self._send_frames("req_meta", session, meta)
             self._send_frames("req_data", session, body)
@@ -338,6 +377,11 @@ class ClipboardGitServer:
     def _receive_request(self, first: Frame, timeout: float) -> tuple[str, str, list[tuple[str, str]], bytes]:
         session = first.session
         meta = parse_json_payload(reassemble(self._receive_set(first, "req_meta", timeout)))
+        created_at = meta.get("created_at")
+        if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+            age = time.time() - float(created_at)
+            if age > STALE_REQUEST_AFTER_SECONDS:
+                raise StaleRequest(f"request is stale by {age:.1f}s")
         method = str(meta.get("method", "GET"))
         path = str(meta.get("path", "/"))
         raw_headers = meta.get("headers", [])
@@ -382,6 +426,12 @@ class ClipboardGitServer:
             (name, value) for name, value in headers
             if name.lower() not in {"host", "content-length", "connection", "transfer-encoding"}
         ]
+        # The tunnel buffers the whole upstream response before forwarding it,
+        # so request that the server mark the response boundary explicitly.
+        # Without this, an HTTP/1.1 server that omits Content-Length (some 401
+        # auth replies) keeps the connection open and response.read() blocks B
+        # for the whole upstream timeout while newer requests pile up.
+        filtered.append(("Connection", "close"))
         filtered.append(("Host", f"{self.target_host}:{self.target_port}"))
         if body:
             filtered.append(("Content-Length", str(len(body))))
@@ -410,6 +460,7 @@ class ClipboardGitServer:
             # ---- Request phase: single-frame vs multi-frame ----
             if first.kind == "req_single":
                 method, path, headers, body = unpack_request(first.payload)
+                ensure_request_fresh(first.payload)
                 self.endpoint.acknowledge(first)
                 # resp_begin barrier: wait for A to signal readiness before
                 # writing the response. This separates B's ACK of the request
@@ -461,6 +512,15 @@ class ClipboardGitServer:
                       session=session[:8], status=response.status,
                       request_bytes=len(body), response_bytes=len(response.body))
             return True
+        except StaleRequest as exc:
+            # A request that waited too long in the clipboard channel is
+            # discarded silently: writing an error frame would occupy the
+            # single clipboard slot for up to retries×ack_timeout while the
+            # original client already gave up, which would block newer
+            # requests behind the very stale frame we are trying to skip.
+            log_event(self.logger, logging.WARNING, "http.request.stale_discarded",
+                      session=session[:8], reason=str(exc))
+            return False
         except Exception as exc:
             error = Frame("error", session, 0, 1,
                           json_payload({"message": str(exc)[:500]}), None)

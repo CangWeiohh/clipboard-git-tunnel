@@ -8,8 +8,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from qtc_tunnel.clipboard import ClipboardEndpoint, MemoryClipboard
 from qtc_tunnel.git_transport import (ClipboardGitClient, ClipboardGitServer,
-                                      pack_request, unpack_request,
-                                      pack_response, unpack_response)
+                                      StaleRequest, ensure_request_fresh,
+                                      pack_request, request_created_at,
+                                      unpack_request, pack_response,
+                                      unpack_response)
 from qtc_tunnel.protocol import Frame, ProtocolError, digest, make_frame
 from qtc_tunnel.transfer import frame_chunks, reassemble
 
@@ -153,6 +155,60 @@ class PackUnpackTests(unittest.TestCase):
             unpack_response(b"\x00\x00")
 
 
+class StaleAndBaselineTests(unittest.TestCase):
+    def test_created_at_round_trip(self):
+        packed = pack_request("GET", "/repo.git/info/refs", [], b"",
+                              created_at=12345.678)
+        self.assertAlmostEqual(request_created_at(packed), 12345.678, places=3)
+
+    def test_legacy_request_without_timestamp_is_fresh(self):
+        packed = pack_request("GET", "/x", [], b"")
+        ensure_request_fresh(packed)  # must not raise
+
+    def test_recent_request_is_fresh(self):
+        packed = pack_request("GET", "/x", [], b"", created_at=time.time())
+        ensure_request_fresh(packed)
+
+    def test_old_request_is_stale(self):
+        packed = pack_request("GET", "/x", [], b"",
+                              created_at=time.time() - 90.0)
+        with self.assertRaises(StaleRequest):
+            ensure_request_fresh(packed)
+
+    def test_startup_ignores_preloaded_clipboard_request(self):
+        # A request left in the clipboard by a previous run must be treated as
+        # the receive baseline, not as a brand-new request after B starts.
+        preloaded = make_frame("req_single", "previous-run",
+                               pack_request("GET", "/stale", [], b""))
+        clipboard = MemoryClipboard(initial=preloaded.to_text())
+        endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        server = ClipboardGitServer(
+            endpoint, chunk_bytes=819200, ack_timeout=1, retries=3,
+            target_host="127.0.0.1", target_port=1, upstream_timeout=1)
+        self.assertFalse(server.serve_one(timeout=0.05))
+        # A changed value after startup is still a valid new frame.
+        new_frame = make_frame("req_single", "new-session",
+                               pack_request("GET", "/new", [], b""))
+        clipboard.write(new_frame.to_text())
+        frame = endpoint.wait_frame(
+            lambda item: item.kind in {"req_meta", "req_single"}, 1.0)
+        self.assertEqual(frame.session, "new-session")
+
+    def test_unrelated_frame_is_stashed_for_later_phase(self):
+        # A frame that does not match the active predicate must not be dropped;
+        # a later wait with a matching predicate returns it first.
+        clipboard = MemoryClipboard()
+        endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        other = make_frame("resp_single", "zzz", b"ignored")
+        clipboard.write(other.to_text())
+        with self.assertRaises(TimeoutError):
+            endpoint.wait_frame(lambda item: item.kind == "ack", 0.05)
+        # The stashed frame must now be returned by a matching predicate.
+        recovered = endpoint.wait_frame(lambda item: item.session == "zzz", 1.0)
+        self.assertEqual(recovered.kind, "resp_single")
+        self.assertEqual(recovered.session, "zzz")
+
+
 class TransportTests(unittest.TestCase):
     def test_server_idle_timeout_is_normal(self):
         endpoint = ClipboardEndpoint(MemoryClipboard(), poll_interval=0.001)
@@ -184,6 +240,44 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(server_thread.is_alive())
         self.assertEqual(response.status, 200)
         self.assertEqual(response.body, b"echo:hello clipboard")
+
+    def test_upstream_request_forces_connection_close(self):
+        # The tunnel buffers the full upstream response before forwarding it,
+        # so B must ask the Git server to close the connection. Otherwise an
+        # HTTP/1.1 reply without Content-Length keeps response.read() blocked.
+        clipboard = MemoryClipboard()
+        a_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        b_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        captured: dict[str, str] = {}
+
+        class _CaptureHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                captured["connection"] = self.headers.get("Connection", "")
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *_args):
+                pass
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CaptureHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        host, port = upstream.server_address
+        server = ClipboardGitServer(
+            b_endpoint, chunk_bytes=1024 * 1024, ack_timeout=1, retries=3,
+            target_host=host, target_port=port, upstream_timeout=3)
+        server_thread = threading.Thread(
+            target=server.serve_one, kwargs={"timeout": 10}, daemon=True)
+        server_thread.start()
+        client = ClipboardGitClient(a_endpoint, chunk_bytes=1024 * 1024,
+                                    ack_timeout=1, retries=3)
+        response = client.request("sess-close", "GET", "/info/refs", [], b"", 10)
+        server_thread.join(3)
+        upstream.shutdown()
+        upstream.server_close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(captured.get("connection"), "close")
 
     def test_single_frame_round_trip(self):
         """Small request+response must use the single-frame path (req_single /

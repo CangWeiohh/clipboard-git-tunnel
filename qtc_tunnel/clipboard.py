@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import replace
 from ctypes import wintypes
 from typing import Callable
@@ -160,8 +161,18 @@ class ClipboardEndpoint:
         self.focus = focus
         self.min_write_gap = float(min_write_gap)
         self.logger = logger or logging.getLogger("clipboard_git_tunnel.clipboard")
-        self._last_text = None
+        # HSR may expose a value left by a previous tunnel run. Establish the
+        # current clipboard as the receive baseline so B does not replay that
+        # stale request immediately after startup.
+        try:
+            self._last_text = self.backend.read()
+        except Exception:
+            self._last_text = None
         self._last_write_time = 0.0
+        # Frames that arrive while a different predicate is being waited on are
+        # kept here for a later phase instead of being silently dropped (for
+        # example, a new request held while B is waiting for resp_begin).
+        self._pending_frames: deque[Frame] = deque(maxlen=32)
 
     def write_frame(self, frame: Frame) -> None:
         text = frame.to_text()
@@ -189,7 +200,22 @@ class ClipboardEndpoint:
                       wait_ms=int(wait * 1000))
             time.sleep(wait)
 
+    def _take_pending(self, predicate: Callable[[Frame], bool]) -> Frame | None:
+        for index, frame in enumerate(self._pending_frames):
+            if predicate(frame):
+                del self._pending_frames[index]
+                return frame
+        return None
+
+    def _stash_frame(self, frame: Frame) -> None:
+        if len(self._pending_frames) == self._pending_frames.maxlen:
+            self._pending_frames.popleft()
+        self._pending_frames.append(frame)
+
     def wait_frame(self, predicate: Callable[[Frame], bool], timeout: float) -> Frame:
+        pending = self._take_pending(predicate)
+        if pending is not None:
+            return pending
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             text = self.backend.read()
@@ -199,12 +225,17 @@ class ClipboardEndpoint:
                     frame = Frame.from_text(text)
                 except ProtocolError:
                     frame = None
-                if frame is not None and predicate(frame):
-                    log_event(self.logger, logging.DEBUG, "frame.receive",
-                              session=frame.session[:8], kind=frame.kind,
-                              seq=frame.seq, total=frame.total,
-                              payload_bytes=len(frame.payload), retry=frame.retry)
-                    return frame
+                if frame is not None:
+                    if predicate(frame):
+                        log_event(self.logger, logging.DEBUG, "frame.receive",
+                                  session=frame.session[:8], kind=frame.kind,
+                                  seq=frame.seq, total=frame.total,
+                                  payload_bytes=len(frame.payload), retry=frame.retry)
+                        return frame
+                    self._stash_frame(frame)
+            pending = self._take_pending(predicate)
+            if pending is not None:
+                return pending
             time.sleep(self.poll_interval)
         raise TimeoutError("clipboard frame timeout")
 

@@ -84,6 +84,9 @@ start_a.bat   # A=Windows VM，监听 0.0.0.0:9999
 2. bat 脚本：LF-only 会让多行块解析错乱 → `.gitattributes` 强制 CRLF；`setlocal EnableDelayedExpansion` 后用 `!VAR!` 而非 `%VAR%`（括号块内 `%VAR%` 只在解析时展开一次）。
 3. config 值取自 `findstr /b` + 子串裁剪（bat 不适合复杂解析）；python 路径带引号需 `"=!VAR:"=!"` 去引号。
 4. 改协议前先想清：新帧是否会与同侧相邻写碰撞？终帧是否误等 ACK？单帧/多帧两条路径都要测。
+5. **B 端会被剪贴板遗留的旧请求卡住**：B 启动时把当前剪贴板当接收基线（不重放上次运行的帧）；请求打包带 `created_at`，B 丢弃在剪贴板滞留超过 `STALE_REQUEST_AFTER_SECONDS`（60s）的请求（`http.request.stale_discarded`），不写 error 帧避免占用单槽。
+6. **上游缺 Content-Length 的响应会挂死 B**：B 转发时强制 `Connection: close`，否则 HTTP/1.1 服务器返回无长度 401 时 `response.read()` 会一直阻塞 B 的 serve_one。
+7. **不匹配当前等待条件的帧会先暂存**：`ClipboardEndpoint.wait_frame` 把无关帧放进有界队列，后续匹配的等待可直接取回，避免新请求在响应等待期被吞掉。
 
 ## 修改守则
 
