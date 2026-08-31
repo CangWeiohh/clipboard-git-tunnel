@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -85,6 +86,18 @@ def main():
                                  logger=logger)
     log_event(logger, logging.INFO, "listener.ready", target=args.target,
               log_path=str(log_path))
+    # Heartbeat: with a pure-clipboard transport, "no frames received" is
+    # indistinguishable from "B wedged in an OpenClipboard loop" from the
+    # logs alone. A periodic liveness line makes the distinction.
+    started_at = time.monotonic()
+
+    def _heartbeat():
+        while True:
+            time.sleep(30.0)
+            log_event(logger, logging.INFO, "process.heartbeat",
+                      uptime_s=int(time.monotonic() - started_at))
+
+    threading.Thread(target=_heartbeat, daemon=True, name="b-heartbeat").start()
     while True:
         try:
             server.serve_one(args.timeout)

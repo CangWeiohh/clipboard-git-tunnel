@@ -61,9 +61,12 @@ class WindowsHSRFocus(FocusController):
         self.kernel32 = ctypes.windll.kernel32
         self._lock = threading.RLock()
         self._hwnd = None
+        self._logged_target = None
         self._last_scan = 0.0
         self._last_alt = 0.0
         self._last_warning = 0.0
+        self._last_not_found_log = 0.0
+        self._last_missing_log = 0.0
 
         self.user32.EnumWindows.restype = wintypes.BOOL
         self._WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -177,13 +180,41 @@ class WindowsHSRFocus(FocusController):
             self.user32.EnumWindows(enum_proc, 0)
             if candidates:
                 candidates.sort(reverse=True)
-                self._hwnd = wintypes.HWND(candidates[0][1])
+                hwnd = wintypes.HWND(candidates[0][1])
+                self._hwnd = hwnd
+                if not same_hwnd(self._logged_target, hwnd):
+                    self._logged_target = hwnd
+                    log_event(self.logger, logging.INFO, "focus.target",
+                              hwnd=hwnd_value(hwnd),
+                              title=candidates[0][2][:120])
+            else:
+                # No HSRClient window found at all (process not running, hidden
+                # desktop, or process-name discovery failed). Do not spam: this
+                # is checked on every write while _hwnd stays None.
+                now = time.monotonic()
+                if now - self._last_not_found_log >= 30.0:
+                    self._last_not_found_log = now
+                    log_event(self.logger, logging.WARNING, "focus.hsr_not_found",
+                              hint="no HSRClient window; clipboard sync will not "
+                                   "propagate (check HSRClient is running and "
+                                   "visible on this machine)")
 
     def before_clipboard_write(self) -> None:
         with self._lock:
             if not self._hwnd or not self.user32.IsWindow(self._hwnd):
                 self._scan(force=True)
             if not self._hwnd:
+                # Previously this path returned silently, hiding exactly the
+                # failure mode where local clipboard writes succeed (A logs
+                # clipboard.write) but HSR never propagates them to the peer
+                # and no ACK ever returns. Warn throttled so the incident is
+                # visible in INFO logs.
+                now = time.monotonic()
+                if now - self._last_missing_log >= 15.0:
+                    self._last_missing_log = now
+                    log_event(self.logger, logging.WARNING, "focus.hsr_missing",
+                              hint="no HSRClient target window; writing to local "
+                                   "clipboard will not reach the peer")
                 return
             target = self._hwnd
             foreground = self.user32.GetForegroundWindow()

@@ -275,8 +275,9 @@ class ClipboardEndpoint:
                     log_event(self.logger, logging.WARNING, "clipboard.ack_timeout",
                               kind=frame.kind, seq=frame.seq, attempts=retries,
                               hint="peer never observed this frame; check HSRClient "
-                                   "window has foreground (HSR skips clipboard sync "
-                                   "while its render window is not active)")
+                                   "is running/foreground on BOTH machines and no "
+                                   "focus.hsr_missing/focus.hsr_not_found warnings "
+                                   "appear in this log")
                     raise TimeoutError(
                         f"clipboard ACK timeout kind={frame.kind} seq={frame.seq} "
                         f"attempts={retries}") from exc
