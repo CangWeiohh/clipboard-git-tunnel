@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socketserver
 import threading
 import time
 import unittest
@@ -278,6 +279,97 @@ class TransportTests(unittest.TestCase):
         upstream.server_close()
         self.assertEqual(response.status, 200)
         self.assertEqual(captured.get("connection"), "close")
+
+    def test_upstream_response_headers_timeout_is_bounded(self):
+        class _HeaderStall(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.recv(4096)
+                time.sleep(1.0)  # accept request, never send an HTTP response
+
+        upstream = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _HeaderStall)
+        upstream.daemon_threads = True
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        host, port = upstream.server_address
+        server = ClipboardGitServer(
+            ClipboardEndpoint(MemoryClipboard()),
+            chunk_bytes=1024, ack_timeout=1, retries=1,
+            target_host=host, target_port=port, upstream_timeout=2,
+            upstream_header_timeout=0.1, upstream_idle_timeout=0.1)
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(TimeoutError, "response headers timeout"):
+                server._forward("GET", "/stall", [], b"")
+            self.assertLess(time.monotonic() - started, 0.8)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+
+    def test_unknown_length_keepalive_uses_idle_boundary(self):
+        class _NoLengthKeepAlive(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                self.send_response(401)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Unauthorized")
+                self.wfile.flush()
+                # Deliberately ignore the client's Connection: close request.
+                self.close_connection = False
+
+            def log_message(self, *_args):
+                pass
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _NoLengthKeepAlive)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        host, port = upstream.server_address
+        server = ClipboardGitServer(
+            ClipboardEndpoint(MemoryClipboard()),
+            chunk_bytes=1024, ack_timeout=1, retries=1,
+            target_host=host, target_port=port, upstream_timeout=2,
+            upstream_header_timeout=0.5, upstream_idle_timeout=0.1)
+        started = time.monotonic()
+        try:
+            response = server._forward("GET", "/auth", [], b"")
+            self.assertEqual(response.status, 401)
+            self.assertEqual(response.body, b"Unauthorized")
+            self.assertLess(time.monotonic() - started, 0.8)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+
+    def test_declared_length_truncation_is_not_silently_accepted(self):
+        class _TruncatedKeepAlive(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "20")
+                self.end_headers()
+                self.wfile.write(b"short")
+                self.wfile.flush()
+                self.close_connection = False
+
+            def log_message(self, *_args):
+                pass
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TruncatedKeepAlive)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        host, port = upstream.server_address
+        server = ClipboardGitServer(
+            ClipboardEndpoint(MemoryClipboard()),
+            chunk_bytes=1024, ack_timeout=1, retries=1,
+            target_host=host, target_port=port, upstream_timeout=2,
+            upstream_header_timeout=0.5, upstream_idle_timeout=0.1)
+        try:
+            with self.assertRaisesRegex(TimeoutError, "body idle timeout"):
+                server._forward("GET", "/truncated", [], b"")
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
 
     def test_single_frame_round_trip(self):
         """Small request+response must use the single-frame path (req_single /

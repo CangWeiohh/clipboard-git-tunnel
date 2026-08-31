@@ -37,5 +37,9 @@ b_chunk_bytes: 819200
 b_ack_timeout: 5
 b_retries: 5
 b_timeout: 300
+# 内网 Git 连接与响应头等待上限；info/refs 正常应在数秒内返回
+b_upstream_header_timeout: 30
+# 响应体连续无数据上限；无 Content-Length 的响应空闲后按 EOF 收尾
+b_upstream_idle_timeout: 2
 b_log_level: INFO
 b_log_dir: ""

@@ -24,7 +24,9 @@ class ConfigTests(unittest.TestCase):
                 "a_window_keywords: \"\"\n"
                 "a_flag: true\n"
                 "\n"
-                "b_target: 192.168.21.14:8888   # trailing comment\n",
+                "b_target: 192.168.21.14:8888   # trailing comment\n"
+                "b_upstream_header_timeout: 30\n"
+                "b_upstream_idle_timeout: 2.5\n",
                 encoding="utf-8",
             )
             config = load_config(path)
@@ -39,6 +41,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config["a_window_keywords"], "")
             self.assertIs(config["a_flag"], True)
             self.assertEqual(config["b_target"], "192.168.21.14:8888")
+            self.assertEqual(config["b_upstream_header_timeout"], 30)
+            self.assertEqual(config["b_upstream_idle_timeout"], 2.5)
 
     def test_side_defaults_maps_prefixes(self):
         config = {"a_chunk_bytes": 1, "b_chunk_bytes": 2, "a_python": ""}

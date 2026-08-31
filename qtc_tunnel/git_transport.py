@@ -30,6 +30,7 @@ round-trip.
 from __future__ import annotations
 
 import logging
+import socket
 import struct
 import time
 from dataclasses import dataclass
@@ -340,6 +341,8 @@ class ClipboardGitServer:
     def __init__(self, endpoint: ClipboardEndpoint, *, chunk_bytes: int,
                  ack_timeout: float, retries: int, target_host: str,
                  target_port: int, upstream_timeout: float,
+                 upstream_header_timeout: float = 30.0,
+                 upstream_idle_timeout: float = 2.0,
                  logger: logging.Logger | None = None) -> None:
         self.endpoint = endpoint
         self.chunk_bytes = chunk_bytes
@@ -347,7 +350,9 @@ class ClipboardGitServer:
         self.retries = retries
         self.target_host = target_host
         self.target_port = target_port
-        self.upstream_timeout = upstream_timeout
+        self.upstream_timeout = float(upstream_timeout)
+        self.upstream_header_timeout = max(0.1, float(upstream_header_timeout))
+        self.upstream_idle_timeout = max(0.1, float(upstream_idle_timeout))
         self.logger = logger or logging.getLogger("clipboard_git_tunnel.server")
 
     def _receive_set(self, first: Frame, expected_kind: str, timeout: float) -> list[Frame]:
@@ -415,13 +420,73 @@ class ClipboardGitServer:
         )
         return method, path, headers, reassemble(data)
 
+    def _read_upstream_body(self, response, connection, started: float) -> bytes:
+        """Read an upstream response with total and idle time bounds.
+
+        HTTP/1.1 requires an explicit response boundary (Content-Length,
+        chunked encoding, or connection close), but the deployed Git endpoint
+        has returned a small 401 body without a length while keeping the socket
+        open.  ``HTTPResponse.read()`` then blocks until the 300s socket timeout.
+
+        For well-framed responses, an idle timeout remains a hard truncation
+        error. For an unframed response, an idle period is the only usable end
+        marker, so return the bytes collected so far and log the recovery.
+        """
+        expected = response.length
+        chunked = bool(response.chunked)
+        unknown_boundary = expected is None and not chunked
+        parts: list[bytes] = []
+        total = 0
+        deadline = started + self.upstream_timeout
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"upstream total timeout after {self.upstream_timeout:.1f}s "
+                    f"body={total}B")
+            response_socket = connection.sock
+            if response_socket is None and response.fp is not None:
+                raw = getattr(response.fp, "raw", None)
+                response_socket = getattr(raw, "_sock", None)
+            if response_socket is not None:
+                response_socket.settimeout(min(self.upstream_idle_timeout, remaining))
+            try:
+                chunk = response.read1(64 * 1024)
+            except (socket.timeout, TimeoutError) as exc:
+                if unknown_boundary:
+                    log_event(self.logger, logging.WARNING,
+                              "upstream.response.idle_boundary",
+                              status=response.status, response_bytes=total,
+                              idle_timeout_s=self.upstream_idle_timeout,
+                              hint="missing Content-Length/chunked; treating idle as EOF")
+                    return b"".join(parts)
+                raise TimeoutError(
+                    f"upstream body idle timeout after {self.upstream_idle_timeout:.1f}s "
+                    f"body={total}B expected={expected if expected is not None else 'chunked'}"
+                ) from exc
+            if not chunk:
+                break
+            parts.append(chunk)
+            total += len(chunk)
+
+        body = b"".join(parts)
+        if expected is not None and len(body) != expected:
+            raise ProtocolError(
+                f"upstream response truncated: expected {expected}B, got {len(body)}B")
+        return body
+
     def _forward(self, method: str, path: str, headers: list[tuple[str, str]], body: bytes) -> HttpMessage:
         started = time.monotonic()
-        log_event(self.logger, logging.DEBUG, "upstream.request.begin",
+        log_event(self.logger, logging.INFO, "upstream.request.begin",
                   method=method, path=safe_http_path(path), request_bytes=len(body),
-                  target=f"{self.target_host}:{self.target_port}")
+                  target=f"{self.target_host}:{self.target_port}",
+                  header_timeout_s=self.upstream_header_timeout,
+                  idle_timeout_s=self.upstream_idle_timeout)
         from http.client import HTTPConnection
-        connection = HTTPConnection(self.target_host, self.target_port, timeout=self.upstream_timeout)
+        connection = HTTPConnection(
+            self.target_host, self.target_port,
+            timeout=min(self.upstream_header_timeout, self.upstream_timeout))
         filtered = [
             (name, value) for name, value in headers
             if name.lower() not in {"host", "content-length", "connection", "transfer-encoding"}
@@ -437,9 +502,22 @@ class ClipboardGitServer:
             filtered.append(("Content-Length", str(len(body))))
         try:
             connection.request(method, path, body=body or None, headers=dict(filtered))
-            response = connection.getresponse()
-            result = HttpMessage(response.status, response.getheaders(), response.read())
-            log_event(self.logger, logging.DEBUG, "upstream.response.complete",
+            log_event(self.logger, logging.INFO, "upstream.request.sent",
+                      elapsed_ms=int((time.monotonic() - started) * 1000))
+            try:
+                response = connection.getresponse()
+            except (socket.timeout, TimeoutError) as exc:
+                raise TimeoutError(
+                    f"upstream response headers timeout after "
+                    f"{self.upstream_header_timeout:.1f}s") from exc
+            log_event(self.logger, logging.INFO, "upstream.response.headers",
+                      status=response.status,
+                      content_length=response.length,
+                      chunked=bool(response.chunked),
+                      elapsed_ms=int((time.monotonic() - started) * 1000))
+            response_body = self._read_upstream_body(response, connection, started)
+            result = HttpMessage(response.status, response.getheaders(), response_body)
+            log_event(self.logger, logging.INFO, "upstream.response.complete",
                       status=result.status, response_bytes=len(result.body),
                       elapsed_ms=int((time.monotonic() - started) * 1000))
             return result

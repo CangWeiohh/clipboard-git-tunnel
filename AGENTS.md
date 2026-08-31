@@ -87,6 +87,7 @@ start_a.bat   # A=Windows VM，监听 0.0.0.0:9999
 5. **B 端会被剪贴板遗留的旧请求卡住**：B 启动时把当前剪贴板当接收基线（不重放上次运行的帧）；请求打包带 `created_at`，B 丢弃在剪贴板滞留超过 `STALE_REQUEST_AFTER_SECONDS`（60s）的请求（`http.request.stale_discarded`），不写 error 帧避免占用单槽。
 6. **上游缺 Content-Length 的响应会挂死 B**：B 转发时强制 `Connection: close`，否则 HTTP/1.1 服务器返回无长度 401 时 `response.read()` 会一直阻塞 B 的 serve_one。
 7. **不匹配当前等待条件的帧会先暂存**：`ClipboardEndpoint.wait_frame` 把无关帧放进有界队列，后续匹配的等待可直接取回，避免新请求在响应等待期被吞掉。
+8. **上游读取必须有界**：`_forward` 分阶段超时并诊断日志（`upstream.request.begin` → `upstream.request.sent` → `upstream.response.headers` → `upstream.response.complete`）。连接/响应头由 `--upstream-header-timeout`（默认 30s）限制；响应体由 `--upstream-idle-timeout`（默认 2s）限制。响应既无 `Content-Length` 又非 chunked 时，空闲即按 EOF 收尾（`upstream.response.idle_boundary`）；有明确边界时超时是截断错误，绝不静默返回半包。改上游读取必须同时覆盖这几种边界（HEAD/204、chunked、keep-alive 401、截断）。
 
 ## 修改守则
 

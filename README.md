@@ -94,7 +94,9 @@ python -m unittest discover -s tests -v
 
 - `a_python` / `b_python`: A/B 端各自 Python 解释器绝对路径；留空 `""` 则使用 PATH 中的 `python`
 - `a_*`: A 端参数（`a_listen`、`a_chunk_bytes`、`a_ack_timeout`、`a_retries`、`a_timeout`、`a_write_gap`、`a_max_request_bytes`、`a_window_keywords`、`a_log_level`、`a_log_dir`）
-- `b_*`: B 端参数（`b_target`、`b_chunk_bytes`、`b_ack_timeout`、`b_retries`、`b_timeout`、`b_log_level`、`b_log_dir`）
+- `b_*`: B 端参数（`b_target`、`b_chunk_bytes`、`b_ack_timeout`、`b_retries`、`b_timeout`、`b_upstream_header_timeout`、`b_upstream_idle_timeout`、`b_log_level`、`b_log_dir`）
+
+其中 `b_upstream_header_timeout`（默认 30s）限制内网 Git 连接/响应头等待，`b_upstream_idle_timeout`（默认 2s）限制响应体连续无数据。对于缺少 `Content-Length`/chunked 的异常响应（现场 401），收到部分正文后空闲 2s 按 EOF 收尾；有明确长度或 chunked 的响应超时会报截断，不能静默返回半包。
 
 优先级：**命令行参数 > config.yaml > 内置默认值**。Python 入口支持 `--config <path>` 指定其他配置文件（默认自动读取仓库根的 `config.yaml`）。
 

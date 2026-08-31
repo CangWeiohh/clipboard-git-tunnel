@@ -38,6 +38,12 @@ def main():
                         default=defaults.get("ack_timeout", 5.0))
     parser.add_argument("--retries", type=int, default=defaults.get("retries", 5))
     parser.add_argument("--timeout", type=float, default=defaults.get("timeout", 300.0))
+    parser.add_argument("--upstream-header-timeout", type=float,
+                        default=defaults.get("upstream_header_timeout", 30.0),
+                        help="seconds to wait for upstream connect/response headers")
+    parser.add_argument("--upstream-idle-timeout", type=float,
+                        default=defaults.get("upstream_idle_timeout", 2.0),
+                        help="max seconds without upstream response body data")
     parser.add_argument("--log-level", default=defaults.get("log_level", "INFO"),
                         choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     parser.add_argument("--log-dir", default=defaults.get("log_dir", ""),
@@ -51,13 +57,19 @@ def main():
     log_event(logger, logging.INFO, "process.start", version="0.1",
               target=args.target, chunk_bytes=args.chunk_bytes,
               ack_timeout_s=args.ack_timeout, retries=args.retries,
-              timeout_s=args.timeout, log_path=str(log_path))
+              timeout_s=args.timeout,
+              upstream_header_timeout_s=args.upstream_header_timeout,
+              upstream_idle_timeout_s=args.upstream_idle_timeout,
+              log_path=str(log_path))
     target_host, target_port = args.target.rsplit(":", 1)
     endpoint = ClipboardEndpoint(WindowsClipboard(logger=logger), logger=logger)
     server = ClipboardGitServer(endpoint, chunk_bytes=args.chunk_bytes,
                                 ack_timeout=args.ack_timeout, retries=args.retries,
                                 target_host=target_host, target_port=int(target_port),
-                                upstream_timeout=args.timeout, logger=logger)
+                                upstream_timeout=args.timeout,
+                                 upstream_header_timeout=args.upstream_header_timeout,
+                                 upstream_idle_timeout=args.upstream_idle_timeout,
+                                 logger=logger)
     log_event(logger, logging.INFO, "listener.ready", target=args.target,
               log_path=str(log_path))
     while True:
