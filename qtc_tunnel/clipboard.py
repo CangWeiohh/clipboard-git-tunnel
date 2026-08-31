@@ -181,6 +181,10 @@ class ClipboardEndpoint:
         self.backend.write(text)
         self._last_text = text
         self._last_write_time = time.monotonic()
+        log_event(self.logger, logging.INFO, "clipboard.write",
+                  kind=frame.kind, session=frame.session[:8], seq=frame.seq,
+                  total=frame.total, retry=frame.retry,
+                  payload_bytes=len(frame.payload))
 
     def wait_write_gap(self) -> None:
         """Enforce a quiet period since this endpoint's previous clipboard write.
@@ -227,11 +231,16 @@ class ClipboardEndpoint:
                     frame = None
                 if frame is not None:
                     if predicate(frame):
-                        log_event(self.logger, logging.DEBUG, "frame.receive",
+                        log_event(self.logger, logging.INFO, "frame.receive",
                                   session=frame.session[:8], kind=frame.kind,
                                   seq=frame.seq, total=frame.total,
                                   payload_bytes=len(frame.payload), retry=frame.retry)
                         return frame
+                    log_event(self.logger, logging.WARNING, "frame.unmatched",
+                              session=frame.session[:8], kind=frame.kind,
+                              seq=frame.seq, total=frame.total,
+                              payload_bytes=len(frame.payload), retry=frame.retry,
+                              hint="frame does not match current wait; stashed")
                     self._stash_frame(frame)
             pending = self._take_pending(predicate)
             if pending is not None:
@@ -242,10 +251,6 @@ class ClipboardEndpoint:
     def send_and_wait_ack(self, frame: Frame, timeout: float, retries: int = 5) -> None:
         for attempt in range(1, retries + 1):
             outbound = replace(frame, retry=attempt - 1)
-            log_event(self.logger, logging.DEBUG, "frame.send",
-                      session=frame.session[:8], kind=frame.kind,
-                      seq=frame.seq, total=frame.total,
-                      payload_bytes=len(outbound.payload), retry=attempt - 1)
             self.write_frame(outbound)
             try:
                 reply = self.wait_frame(
@@ -261,6 +266,9 @@ class ClipboardEndpoint:
                         details = {"message": "remote returned malformed error"}
                     self.acknowledge(reply)
                     raise ClipboardError(details.get("message", "remote clipboard error"))
+                log_event(self.logger, logging.INFO, "frame.ack",
+                          session=frame.session[:8], kind=frame.kind,
+                          seq=frame.seq, attempt=attempt)
                 return
             except TimeoutError as exc:
                 if attempt == retries:

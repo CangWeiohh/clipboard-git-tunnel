@@ -41,5 +41,7 @@ b_timeout: 300
 b_upstream_header_timeout: 30
 # 响应体连续无数据上限；无 Content-Length 的响应空闲后按 EOF 收尾
 b_upstream_idle_timeout: 2
+# HSRClient 窗口标题关键字（逗号分隔），留空则按进程名自动发现
+b_window_keywords: ""
 b_log_level: INFO
 b_log_dir: ""

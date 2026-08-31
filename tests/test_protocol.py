@@ -209,6 +209,40 @@ class StaleAndBaselineTests(unittest.TestCase):
         self.assertEqual(recovered.kind, "resp_single")
         self.assertEqual(recovered.session, "zzz")
 
+    def test_single_frame_barrier_timeout_returns_false(self):
+        # B ACKs a req_single but the client never sends resp_begin. serve_one
+        # must abandon the dead session (return False) within the barrier
+        # window instead of holding the loop for the full client timeout.
+        clipboard = MemoryClipboard()
+        b_endpoint = ClipboardEndpoint(clipboard, poll_interval=0.001)
+        server = ClipboardGitServer(
+            b_endpoint, chunk_bytes=819200, ack_timeout=1, retries=3,
+            target_host="127.0.0.1", target_port=1, upstream_timeout=1)
+        req = make_frame("req_single", "barrier-sess",
+                         pack_request("GET", "/x", [], b"", created_at=time.time()))
+        clipboard.write(req.to_text())
+        # Serve in a thread; serve_one should return after ~min(60, timeout).
+        result: list[bool | Exception] = []
+
+        def run():
+            try:
+                result.append(server.serve_one(timeout=5))
+            except Exception as exc:  # pragma: no cover - should not raise
+                result.append(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        started = time.monotonic()
+        thread.start()
+        # Fire a resp_begin for the wrong session to verify B does not
+        # mistake it for a match.
+        time.sleep(0.05)
+        clipboard.write(make_frame("resp_begin", "other-sess").to_text())
+        thread.join(15)
+        elapsed = time.monotonic() - started
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [False])
+        self.assertLess(elapsed, 10.0)
+
 
 class TransportTests(unittest.TestCase):
     def test_server_idle_timeout_is_normal(self):

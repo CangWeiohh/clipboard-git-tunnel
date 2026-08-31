@@ -26,7 +26,8 @@ class ConfigTests(unittest.TestCase):
                 "\n"
                 "b_target: 192.168.21.14:8888   # trailing comment\n"
                 "b_upstream_header_timeout: 30\n"
-                "b_upstream_idle_timeout: 2.5\n",
+                "b_upstream_idle_timeout: 2.5\n"
+                "b_window_keywords: \"HSR\"\n",
                 encoding="utf-8",
             )
             config = load_config(path)
@@ -43,6 +44,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config["b_target"], "192.168.21.14:8888")
             self.assertEqual(config["b_upstream_header_timeout"], 30)
             self.assertEqual(config["b_upstream_idle_timeout"], 2.5)
+            self.assertEqual(config["b_window_keywords"], "HSR")
 
     def test_side_defaults_maps_prefixes(self):
         config = {"a_chunk_bytes": 1, "b_chunk_bytes": 2, "a_python": ""}

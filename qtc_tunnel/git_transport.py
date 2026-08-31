@@ -44,9 +44,19 @@ from .transfer import frame_chunks, reassemble
 
 STALE_REQUEST_AFTER_SECONDS = 60.0
 
+# How long B will wait for a client's resp_begin marker before abandoning the
+# session. A resends the marker every ack_timeout (default 5s), so 60s covers
+# a dozen resends; waiting the full client timeout (300s) would starve newer
+# requests behind a dead session (A's deadline means no response is coming).
+MIN_BARRIER_TIMEOUT_SECONDS = 60.0
+
 
 class StaleRequest(Exception):
     """Raised when a request has been delayed in the clipboard queue."""
+
+
+class BarrierTimeout(Exception):
+    """Raised when a client never signals the resp_begin barrier."""
 
 
 def request_created_at(payload: bytes) -> float | None:
@@ -274,6 +284,15 @@ class ClipboardGitClient:
         begin_attempt = 0
         while True:
             begin_attempt += 1
+            # The first resp_begin write immediately follows the req_single
+            # ACK round trip (~2s), which is inside HSR's single-slot
+            # propagation window for consecutive same-side writes. Enforce the
+            # cross-request write gap here too, or HSR silently drops the
+            # marker and B waits for a resp_begin that never arrives.
+            self.endpoint.wait_write_gap()
+            log_event(self.logger, logging.INFO, "resp_begin.send",
+                      session=session[:8], attempt=begin_attempt,
+                      elapsed_ms=int((time.monotonic() - started) * 1000))
             self.endpoint.write_frame(
                 Frame("resp_begin", session, 0, 1, b"", None, retry=begin_attempt - 1))
             try:
@@ -288,7 +307,13 @@ class ClipboardGitClient:
                     raise TimeoutError(
                         f"clipboard resp_begin timeout session={session[:8]} "
                         f"attempts={begin_attempt}") from None
-                # keep waiting; resend the begin marker
+                log_event(self.logger, logging.WARNING, "resp_begin.retry",
+                          session=session[:8], attempt=begin_attempt,
+                          elapsed_ms=int((time.monotonic() - started) * 1000),
+                          hint="no response after marker; resending")
+        log_event(self.logger, logging.INFO, "resp_begin.ok",
+                  session=session[:8], attempts=begin_attempt,
+                  elapsed_ms=int((time.monotonic() - started) * 1000))
 
         # ---- Response phase ----
         if first.kind == "error":
@@ -414,11 +439,36 @@ class ClipboardGitServer:
         # anything. Deliberately no ACK for resp_begin: writing twice in a row
         # from B side (req_commit ACK, then response) within HSR's propagation
         # window silently drops the earlier write on the shared clipboard.
-        self.endpoint.wait_frame(
-            lambda item: item.session == session and item.kind == "resp_begin",
-            timeout,
-        )
+        self._wait_barrier(session)
         return method, path, headers, reassemble(data)
+
+    def _wait_barrier(self, session: str, timeout: float = MIN_BARRIER_TIMEOUT_SECONDS) -> None:
+        """Wait for the client's resp_begin marker within a bounded window.
+
+        A resends the marker every ack_timeout (default 5s), so this 60s cap
+        covers a dozen resends. If the client never signals readiness, abandon
+        the session (BarrierTimeout) instead of holding serve_one hostage for
+        the full 300s client deadline: a newer Git request must not starve
+        behind a dead session.
+        """
+        barrier_timeout = min(timeout, MIN_BARRIER_TIMEOUT_SECONDS)
+        log_event(self.logger, logging.INFO, "http.request.barrier.wait",
+                  session=session[:8], kind="resp_begin",
+                  timeout_s=barrier_timeout)
+        try:
+            self.endpoint.wait_frame(
+                lambda item: item.session == session and item.kind == "resp_begin",
+                barrier_timeout,
+            )
+        except TimeoutError:
+            log_event(self.logger, logging.WARNING,
+                      "http.request.barrier_timeout",
+                      session=session[:8], kind="resp_begin",
+                      timeout_s=barrier_timeout,
+                      hint="client never signalled resp_begin")
+            raise BarrierTimeout(session) from None
+        log_event(self.logger, logging.INFO, "http.request.barrier.ok",
+                  session=session[:8], kind="resp_begin")
 
     def _read_upstream_body(self, response, connection, started: float) -> bytes:
         """Read an upstream response with total and idle time bounds.
@@ -539,20 +589,22 @@ class ClipboardGitServer:
             if first.kind == "req_single":
                 method, path, headers, body = unpack_request(first.payload)
                 ensure_request_fresh(first.payload)
+                log_event(self.logger, logging.INFO, "http.request.received",
+                          session=session[:8], method=method,
+                          path=safe_http_path(path), request_bytes=len(body),
+                          mode="single")
                 self.endpoint.acknowledge(first)
                 # resp_begin barrier: wait for A to signal readiness before
                 # writing the response. This separates B's ACK of the request
                 # from B's response write by a full propagation round-trip.
-                self.endpoint.wait_frame(
-                    lambda item: item.session == session and item.kind == "resp_begin",
-                    timeout,
-                )
+                self._wait_barrier(session, timeout)
             else:
                 method, path, headers, body = self._receive_request(first, timeout)
+                log_event(self.logger, logging.INFO, "http.request.received",
+                          session=session[:8], method=method,
+                          path=safe_http_path(path), request_bytes=len(body),
+                          mode="multi")
 
-            log_event(self.logger, logging.INFO, "http.request.received",
-                      session=session[:8], method=method, path=safe_http_path(path),
-                      request_bytes=len(body))
             response = self._forward(method, path, headers, body)
 
             # ---- Response phase: single-frame vs multi-frame ----
@@ -590,6 +642,12 @@ class ClipboardGitServer:
                       session=session[:8], status=response.status,
                       request_bytes=len(body), response_bytes=len(response.body))
             return True
+        except BarrierTimeout:
+            # Client never signalled resp_begin: abandon silently (an error
+            # frame would occupy the single clipboard slot while the client
+            # is already timing out, blocking newer requests). Same rationale
+            # as StaleRequest.
+            return False
         except StaleRequest as exc:
             # A request that waited too long in the clipboard channel is
             # discarded silently: writing an error frame would occupy the
