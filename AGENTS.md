@@ -80,7 +80,7 @@ start_a.bat   # A=Windows VM，监听 0.0.0.0:9999
 
 ## 常见坑（按事故历史）
 
-1. 504 五轮排查：焦点丢失（第一轮）、req_commit/resp_meta 屏障缺失（第二轮）、跨请求 write_gap 缺失（第三轮）、OpenClipboard 窗口太短（第四轮）、A/B 混版（第五轮）、HSRClient 窗口失焦导致剪贴板同步整体跳过（第六轮，`req_single` 5 次重写 B 端零接收）。第七轮（resp_begin 空等）：A 端 `http.request.begin` 后日志静止 100s+、剪贴板持续新增同类 QTC1 内容、B 端零日志——根因是传输层全是 DEBUG 日志无法定位 + resp_begin 首写违反同侧写间隔被 HSR 静默丢弃 + B 端屏障无上限饿死新请求。
+1. 504 五轮排查：焦点丢失（第一轮）、req_commit/resp_meta 屏障缺失（第二轮）、跨请求 write_gap 缺失（第三轮）、OpenClipboard 窗口太短（第四轮）、A/B 混版（第五轮）、HSRClient 窗口失焦导致剪贴板同步整体跳过（第六轮，`req_single` 5 次重写 B 端零接收）。第七轮（resp_begin 空等）：A 端 `http.request.begin` 后日志静止 100s+、剪贴板持续新增同类 QTC1 内容、B 端零日志——根因是传输层全是 DEBUG 日志无法定位 + resp_begin 首写违反同侧写间隔被 HSR 静默丢弃 + B 端屏障无上限饿死新请求。第八轮（B 端启动报错）：`focus.py` `IsWindowVisible` 缺 argtypes，64 位 HWND 按 C int 转换溢出，`Exception ignored` 且 EnumWindows 提前终止——焦点控制是后来给 B 端新加的，A 端同代码同样有隐患，已统一补 argtypes + 回调兜底。
 2. bat 脚本：LF-only 会让多行块解析错乱 → `.gitattributes` 强制 CRLF；`setlocal EnableDelayedExpansion` 后用 `!VAR!` 而非 `%VAR%`（括号块内 `%VAR%` 只在解析时展开一次）。
 3. config 值取自 `findstr /b` + 子串裁剪（bat 不适合复杂解析）；python 路径带引号需 `"=!VAR:"=!"` 去引号。
 4. 改协议前先想清：新帧是否会与同侧相邻写碰撞？终帧是否误等 ACK？单帧/多帧两条路径都要测。
@@ -92,6 +92,7 @@ start_a.bat   # A=Windows VM，监听 0.0.0.0:9999
 10. **传输层日志必须是 INFO 级**：`frame.receive`/`frame.unmatched`/`clipboard.write` 全部提高到 INFO（旧版是 DEBUG，INFO 下 A/B 两端对剪贴板活动完全隐形，故障时双方日志都静止）。写帧带 `kind/session/seq/total/retry/payload_bytes`，收到任何不匹配帧打 WARNING（`frame.unmatched`）并暂存。
 11. **B 端也要 HSR 窗口焦点**：A 端有 `WindowsHSRFocus`，云桌面 B 端同样需要——HSR 渲染窗口不是前台时同步会整体跳过。b_tunnel 现在也接 focus（`b_window_keywords` 配置，默认进程名自动发现）。
 12. **B 端屏障有时间上限**：`_wait_barrier` 上限 `MIN_BARRIER_TIMEOUT_SECONDS=60s`（A 每 5s 重发一次 marker，60s 覆盖十余次重发）。超时抛 `BarrierTimeout`，serve_one 放弃该会话返回 False，不让死会话占住 300s 把新请求饿死。
+13. **ctypes 函数必须显式声明 argtypes**：`IsWindowVisible`/`GetWindowTextW`/`GetClassNameW` 缺 `argtypes` 时参数按 C int（32 位）转换，64 位 HWND 高位置位会 `OverflowError: int too long to convert`；且 Python 异常逃逸 ctypes 回调会让回调返回 FALSE、`EnumWindows` 提前终止枚举 → 焦点维护静默失效。所有 user32/kernel32 调用一律显式 `argtypes`，`enum_proc` 回调体内 try/except 兜底（单窗口失败只跳过不中断枚举）。
 
 ## 修改守则
 

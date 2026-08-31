@@ -23,6 +23,18 @@ class HwndHelperTests(unittest.TestCase):
         self.assertEqual(hwnd_value(None), 0)
         self.assertTrue(same_hwnd(None, 0))
 
+    def test_large_hwnd_values_do_not_overflow(self):
+        # EnumWindows on 64-bit Windows can yield HWND values whose high
+        # 32 bits are set. focus.py must never feed such values through a
+        # ctypes function whose argtypes are missing (defaults to C int),
+        # which raises OverflowError and aborts the whole enumeration.
+        from ctypes import wintypes
+
+        large = 0x0000000112345678
+        self.assertEqual(hwnd_value(large), large)
+        self.assertTrue(same_hwnd(wintypes.HWND(large), large))
+        self.assertNotEqual(hwnd_value(large), 0x12345678)
+
 
 if __name__ == "__main__":
     unittest.main()

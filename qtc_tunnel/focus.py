@@ -66,11 +66,16 @@ class WindowsHSRFocus(FocusController):
         self._last_warning = 0.0
 
         self.user32.EnumWindows.restype = wintypes.BOOL
+        self._WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        self.user32.EnumWindows.argtypes = [self._WNDENUMPROC, wintypes.LPARAM]
         self.user32.GetWindowTextW.restype = ctypes.c_int
+        self.user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, ctypes.c_int]
         self.user32.GetClassNameW.restype = ctypes.c_int
+        self.user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, ctypes.c_int]
         self.user32.IsWindow.restype = wintypes.BOOL
         self.user32.IsWindow.argtypes = [wintypes.HWND]
         self.user32.IsWindowVisible.restype = wintypes.BOOL
+        self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
         self.user32.IsIconic.restype = wintypes.BOOL
         self.user32.IsIconic.argtypes = [wintypes.HWND]
         self.user32.GetForegroundWindow.restype = wintypes.HWND
@@ -131,32 +136,42 @@ class WindowsHSRFocus(FocusController):
             candidates: list[tuple[int, int, str]] = []
             foreground = self.user32.GetForegroundWindow()
 
-            @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            @self._WNDENUMPROC
             def enum_proc(hwnd, _lparam):
-                if not self.user32.IsWindowVisible(hwnd):
-                    return True
-                title_buf = ctypes.create_unicode_buffer(256)
-                class_buf = ctypes.create_unicode_buffer(256)
-                self.user32.GetWindowTextW(hwnd, title_buf, 256)
-                self.user32.GetClassNameW(hwnd, class_buf, 256)
-                pid = wintypes.DWORD()
-                self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                proc = self._process_name(pid.value)
-                base = proc.rsplit("\\", 1)[-1].lower()
-                if base in self._SYSTEM_PROCESSES:
-                    return True
-                haystack = f"{title_buf.value} {class_buf.value} {proc}".lower()
-                trusted = "hsrclient" in base or "cmss" in base or "receiver" in base
-                if self.keywords:
-                    trusted = any(key in haystack for key in self.keywords)
-                if trusted:
-                    # Prefer the window that is already foreground. HSRClient
-                    # may expose multiple top-level windows with the same title;
-                    # pinning a different same-titled HWND makes the old equality
-                    # check report a false focus failure and can stop HSR sync.
-                    score = (1000 if same_hwnd(hwnd, foreground) else 0)
-                    score += (100 if "hsrclient" in base else 50) + len(haystack)
-                    candidates.append((score, int(hwnd), haystack))
+                # A hostile or transient window handle (or a ctypes argtype
+                # regression) must never abort the whole enumeration: when a
+                # Python exception escapes a ctypes callback, the callback
+                # returns FALSE and EnumWindows stops scanning, which silently
+                # breaks focus maintenance. Any per-window failure just skips
+                # that window.
+                try:
+                    if not self.user32.IsWindowVisible(hwnd):
+                        return True
+                    title_buf = ctypes.create_unicode_buffer(256)
+                    class_buf = ctypes.create_unicode_buffer(256)
+                    self.user32.GetWindowTextW(hwnd, title_buf, 256)
+                    self.user32.GetClassNameW(hwnd, class_buf, 256)
+                    pid = wintypes.DWORD()
+                    self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    proc = self._process_name(pid.value)
+                    base = proc.rsplit("\\", 1)[-1].lower()
+                    if base in self._SYSTEM_PROCESSES:
+                        return True
+                    haystack = f"{title_buf.value} {class_buf.value} {proc}".lower()
+                    trusted = "hsrclient" in base or "cmss" in base or "receiver" in base
+                    if self.keywords:
+                        trusted = any(key in haystack for key in self.keywords)
+                    if trusted:
+                        # Prefer the window that is already foreground. HSRClient
+                        # may expose multiple top-level windows with the same title;
+                        # pinning a different same-titled HWND makes the old equality
+                        # check report a false focus failure and can stop HSR sync.
+                        score = (1000 if same_hwnd(hwnd, foreground) else 0)
+                        score += (100 if "hsrclient" in base else 50) + len(haystack)
+                        candidates.append((score, hwnd_value(hwnd), haystack))
+                except Exception:
+                    log_event(self.logger, logging.DEBUG, "focus.window_skip",
+                              hwnd=hwnd_value(hwnd))
                 return True
 
             self.user32.EnumWindows(enum_proc, 0)
