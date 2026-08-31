@@ -212,6 +212,9 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(server_thread.is_alive())
         self.assertEqual(response.status, 200)
         self.assertEqual(response.body, b"echo:hello single frame")
+        terminal = Frame.from_text(clipboard.read())
+        self.assertIsNotNone(terminal)
+        self.assertEqual(terminal.kind, "resp_single")
 
     def test_large_response_uses_multi_frame_with_big_chunk(self):
         """A response larger than the chunk must still fall back to

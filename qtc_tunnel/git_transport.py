@@ -258,7 +258,10 @@ class ClipboardGitClient:
 
         if first.kind == "resp_single":
             # Single-frame response: meta + body + SHA-256 in one frame.
-            self.endpoint.acknowledge(first)
+            # The response terminal frame is intentionally fire-and-forget on B;
+            # its ACK is not consumed by B and would only create another A-side
+            # clipboard write immediately before the next Git request. The body
+            # digest below is the end-to-end integrity confirmation.
             status, resp_headers, resp_body = unpack_response(first.payload)
             log_event(self.logger, logging.INFO, "http.request.complete",
                       session=session[:8], status=status,
@@ -274,8 +277,8 @@ class ClipboardGitClient:
             lambda item: item.session == session and item.kind in {"resp_end", "error"},
             timeout,
         )
-        self.endpoint.acknowledge(end)
         if end.kind == "error":
+            self.endpoint.acknowledge(end)
             error = parse_json_payload(end.payload)
             raise RuntimeError(error.get("message", "remote tunnel error"))
         body_bytes = reassemble(response_frames)

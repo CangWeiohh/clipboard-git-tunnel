@@ -61,13 +61,15 @@ B  RESP_DATA → A
 B  ← ACK
 ...
 B  RESP_END  → A
-B  ← ACK
+(客户端校验响应 SHA-256；响应终帧不再回写 ACK)
 ```
+
+小请求/响应会自动使用 `req_single` / `resp_single` 单帧路径；大请求或大响应超过单帧容量时回退到上述多帧协议。数据帧仍严格 ACK，只有响应终帧使用 fire-and-forget，以避免无意义的 A→B 剪贴板写入干扰下一个 Git 请求。
 
 线格式为 `QTC1:<base64(JSON)>`。JSON 字段包括：
 
 - `v`: `qtc-clipboard-1`
-- `kind`: `req_meta`、`req_data`、`req_end`、`req_commit`、`resp_begin`、`resp_meta`、`resp_data`、`resp_end`、`ack`、`error`
+- `kind`: `req_meta`、`req_data`、`req_end`、`req_commit`、`req_single`、`resp_begin`、`resp_meta`、`resp_data`、`resp_end`、`resp_single`、`ack`、`error`
 - `session`: 每次 HTTP 请求唯一 ID
 - `seq` / `total`: 分块序号
 - `payload`: Base64 数据

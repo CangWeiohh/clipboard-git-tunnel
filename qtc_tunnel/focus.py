@@ -19,6 +19,21 @@ from ctypes import wintypes
 from .logging_utils import log_event
 
 
+def hwnd_value(hwnd) -> int:
+    """Normalize Win32 HWND values for reliable comparisons.
+
+    ``wintypes.HWND`` is a ``ctypes.c_void_p`` wrapper. Two wrappers carrying
+    the same numeric handle compare unequal by object identity, while Win32 API
+    calls may return a plain int. Always compare the underlying integer value.
+    """
+    value = getattr(hwnd, "value", hwnd)
+    return int(value or 0)
+
+
+def same_hwnd(left, right) -> bool:
+    return hwnd_value(left) == hwnd_value(right)
+
+
 class FocusController:
     def before_clipboard_write(self) -> None:
         """Give the transport's clipboard write a chance to cross HSR."""
@@ -90,6 +105,23 @@ class WindowsHSRFocus(FocusController):
             self.kernel32.CloseHandle(handle)
         return ""
 
+    def _window_process_base(self, hwnd) -> str:
+        """Return the executable basename owning *hwnd*, or an empty string."""
+        if not hwnd:
+            return ""
+        pid = wintypes.DWORD()
+        if not self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)):
+            return ""
+        path = self._process_name(pid.value)
+        return path.rsplit("\\", 1)[-1].lower()
+
+    def _is_trusted_window(self, hwnd) -> bool:
+        """Whether an HWND belongs to the HSR client process family."""
+        base = self._window_process_base(hwnd)
+        return bool(base) and (
+            "hsrclient" in base or "cmss" in base or "receiver" in base
+        )
+
     def _scan(self, force: bool = False) -> None:
         with self._lock:
             now = time.monotonic()
@@ -97,6 +129,7 @@ class WindowsHSRFocus(FocusController):
                 return
             self._last_scan = now
             candidates: list[tuple[int, int, str]] = []
+            foreground = self.user32.GetForegroundWindow()
 
             @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
             def enum_proc(hwnd, _lparam):
@@ -117,9 +150,12 @@ class WindowsHSRFocus(FocusController):
                 if self.keywords:
                     trusted = any(key in haystack for key in self.keywords)
                 if trusted:
-                    # Prefer the actual HSRClient process, then largest window
-                    # as a stable choice among its render/host windows.
-                    score = (100 if "hsrclient" in base else 50) + len(haystack)
+                    # Prefer the window that is already foreground. HSRClient
+                    # may expose multiple top-level windows with the same title;
+                    # pinning a different same-titled HWND makes the old equality
+                    # check report a false focus failure and can stop HSR sync.
+                    score = (1000 if same_hwnd(hwnd, foreground) else 0)
+                    score += (100 if "hsrclient" in base else 50) + len(haystack)
                     candidates.append((score, int(hwnd), haystack))
                 return True
 
@@ -136,7 +172,15 @@ class WindowsHSRFocus(FocusController):
                 return
             target = self._hwnd
             foreground = self.user32.GetForegroundWindow()
-            if foreground == target:
+            if same_hwnd(foreground, target):
+                return
+            # HSRClient can recreate or switch its top-level render HWND while
+            # keeping the same foreground process/window title. In that case the
+            # foreground is already a valid HSR surface; treating HWND inequality
+            # as focus failure causes needless rewrites and, more importantly,
+            # hides the fact that the clipboard sync path is actually active.
+            if self._is_trusted_window(foreground):
+                self._hwnd = wintypes.HWND(hwnd_value(foreground))
                 return
             self.user32.ShowWindow(target, 9)
             fg_tid = wintypes.DWORD()
@@ -153,7 +197,7 @@ class WindowsHSRFocus(FocusController):
             finally:
                 if attached:
                     self.user32.AttachThreadInput(fg_tid.value, target_tid.value, False)
-            if self.user32.GetForegroundWindow() != target:
+            if not same_hwnd(self.user32.GetForegroundWindow(), target):
                 now = time.monotonic()
                 if now - self._last_alt >= 2.0:
                     self._last_alt = now
@@ -161,7 +205,7 @@ class WindowsHSRFocus(FocusController):
                     self.user32.keybd_event(0x12, 0, 0x0002, None)
                 self.user32.BringWindowToTop(target)
                 self.user32.SetForegroundWindow(target)
-                if self.user32.GetForegroundWindow() != target:
+                if not same_hwnd(self.user32.GetForegroundWindow(), target):
                     if now - self._last_warning >= 5.0:
                         self._last_warning = now
                         fg = self.user32.GetForegroundWindow()
