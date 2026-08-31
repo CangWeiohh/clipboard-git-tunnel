@@ -88,14 +88,16 @@ def main():
               log_path=str(log_path))
     # Heartbeat: with a pure-clipboard transport, "no frames received" is
     # indistinguishable from "B wedged in an OpenClipboard loop" from the
-    # logs alone. A periodic liveness line makes the distinction.
+    # logs alone. A periodic liveness line makes the distinction. Beat
+    # immediately so short sessions always carry at least one heartbeat,
+    # then every 15s.
     started_at = time.monotonic()
 
     def _heartbeat():
         while True:
-            time.sleep(30.0)
             log_event(logger, logging.INFO, "process.heartbeat",
                       uptime_s=int(time.monotonic() - started_at))
+            time.sleep(15.0)
 
     threading.Thread(target=_heartbeat, daemon=True, name="b-heartbeat").start()
     while True:

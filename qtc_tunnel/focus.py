@@ -137,6 +137,7 @@ class WindowsHSRFocus(FocusController):
                 return
             self._last_scan = now
             candidates: list[tuple[int, int, str]] = []
+            seen_bases: dict[str, int] = {}
             foreground = self.user32.GetForegroundWindow()
 
             @self._WNDENUMPROC
@@ -158,6 +159,8 @@ class WindowsHSRFocus(FocusController):
                     self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                     proc = self._process_name(pid.value)
                     base = proc.rsplit("\\", 1)[-1].lower()
+                    if base:
+                        seen_bases[base] = seen_bases.get(base, 0) + 1
                     if base in self._SYSTEM_PROCESSES:
                         return True
                     haystack = f"{title_buf.value} {class_buf.value} {proc}".lower()
@@ -190,11 +193,17 @@ class WindowsHSRFocus(FocusController):
             else:
                 # No HSRClient window found at all (process not running, hidden
                 # desktop, or process-name discovery failed). Do not spam: this
-                # is checked on every write while _hwnd stays None.
+                # is checked on every write while _hwnd stays None. Record what
+                # windows WERE seen so an oddly-named HSR process is not
+                # mistaken for "HSR not running".
                 now = time.monotonic()
                 if now - self._last_not_found_log >= 30.0:
                     self._last_not_found_log = now
+                    top = ",".join(
+                        f"{name}x{count}" for name, count in
+                        sorted(seen_bases.items(), key=lambda item: -item[1])[:10])
                     log_event(self.logger, logging.WARNING, "focus.hsr_not_found",
+                              seen_windows=top or "none",
                               hint="no HSRClient window; clipboard sync will not "
                                    "propagate (check HSRClient is running and "
                                    "visible on this machine)")
